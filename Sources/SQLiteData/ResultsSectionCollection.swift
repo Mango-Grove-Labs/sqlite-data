@@ -31,79 +31,79 @@ import OrderedCollections
 /// sectioned column.
 public struct ResultsSectionCollection<Element, SectionName: Hashable> {
   let elements: [Element]
-  private let sections: OrderedDictionary<SectionName, [Element]>
+  private let elementIndicesBySectionName: OrderedDictionary<SectionName, [Int]>
 
   init() {
     elements = []
-    sections = [:]
+    elementIndicesBySectionName = [:]
   }
 
   init(elements: some Sequence<Element>, sectionName: (Element) -> SectionName) {
     var allElements: [Element] = []
-    var sections: OrderedDictionary<SectionName, [Element]> = [:]
+    var elementIndicesBySectionName: OrderedDictionary<SectionName, [Int]> = [:]
     for element in elements {
+      elementIndicesBySectionName[sectionName(element), default: []].append(allElements.count)
       allElements.append(element)
-      sections[sectionName(element), default: []].append(element)
     }
     self.elements = allElements
-    self.sections = sections
+    self.elementIndicesBySectionName = elementIndicesBySectionName
   }
 
   init(elements: [Element], sectionName: SectionName) {
     self.elements = elements
-    self.sections = elements.isEmpty ? [:] : [sectionName: elements]
+    self.elementIndicesBySectionName =
+      elements.isEmpty ? [:] : [sectionName: Array(elements.indices)]
   }
 
   init(cursor: QueryCursor<Element>, sectionName: (Element) -> SectionName) throws {
     var elements: [Element] = []
-    var sections: OrderedDictionary<SectionName, [Element]> = [:]
     while let element = try cursor.next() {
       elements.append(element)
-      sections[sectionName(element), default: []].append(element)
     }
-    self.elements = elements
-    self.sections = sections
+    self.init(elements: elements, sectionName: sectionName)
   }
 
   /// The names of each section in the collection, in the order the sections appear.
   public var sectionNames: [SectionName] {
-    Array(sections.keys)
+    Array(elementIndicesBySectionName.keys)
   }
 
   /// Returns the section with the given name, or `nil` if no such section exists.
   ///
   /// - Parameter name: The name of a section.
   public subscript(sectionName name: SectionName) -> ResultsSection<Element, SectionName>? {
-    sections[name].map { ResultsSection(name: name, elements: $0) }
+    elementIndicesBySectionName[name].map {
+      ResultsSection(name: name, base: elements, elementIndices: $0)
+    }
   }
 
   /// Returns whether or not the collection contains a section with the given name.
   ///
   /// - Parameter name: The name of a section.
   public func contains(sectionName name: SectionName) -> Bool {
-    sections.keys.contains(name)
+    elementIndicesBySectionName.keys.contains(name)
   }
 
   /// Returns the position of the section with the given name, or `nil` if no such section exists.
   ///
   /// - Parameter name: The name of a section.
   public func index(ofSectionNamed name: SectionName) -> Int? {
-    sections.index(forKey: name)
+    elementIndicesBySectionName.index(forKey: name)
   }
 }
 
 extension ResultsSectionCollection: RandomAccessCollection {
   public var startIndex: Int {
-    sections.elements.startIndex
+    elementIndicesBySectionName.elements.startIndex
   }
 
   public var endIndex: Int {
-    sections.elements.endIndex
+    elementIndicesBySectionName.elements.endIndex
   }
 
   public subscript(position: Int) -> ResultsSection<Element, SectionName> {
-    let (name, elements) = sections.elements[position]
-    return ResultsSection(name: name, elements: elements)
+    let (name, elementIndices) = elementIndicesBySectionName.elements[position]
+    return ResultsSection(name: name, base: elements, elementIndices: elementIndices)
   }
 }
 
@@ -124,11 +124,13 @@ public struct ResultsSection<Element, SectionName: Hashable>: Identifiable {
   /// This is the value at the `sectionBy:` key path shared by every element in the section.
   public let name: SectionName
 
-  private let elements: [Element]
+  private let base: [Element]
+  private let elementIndices: [Int]
 
-  init(name: SectionName, elements: [Element]) {
+  init(name: SectionName, base: [Element], elementIndices: [Int]) {
     self.name = name
-    self.elements = elements
+    self.base = base
+    self.elementIndices = elementIndices
   }
 
   /// The identity of the section, equivalent to its ``name``.
@@ -139,15 +141,15 @@ public struct ResultsSection<Element, SectionName: Hashable>: Identifiable {
 
 extension ResultsSection: RandomAccessCollection {
   public var startIndex: Int {
-    elements.startIndex
+    elementIndices.startIndex
   }
 
   public var endIndex: Int {
-    elements.endIndex
+    elementIndices.endIndex
   }
 
   public subscript(position: Int) -> Element {
-    elements[position]
+    base[elementIndices[position]]
   }
 }
 
@@ -155,7 +157,7 @@ extension ResultsSection: Sendable where Element: Sendable, SectionName: Sendabl
 
 extension ResultsSection: Equatable where Element: Equatable {
   public static func == (lhs: Self, rhs: Self) -> Bool {
-    lhs.name == rhs.name && lhs.elements == rhs.elements
+    lhs.name == rhs.name && lhs.elementsEqual(rhs)
   }
 }
 
