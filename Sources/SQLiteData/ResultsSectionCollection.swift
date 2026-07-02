@@ -1,5 +1,6 @@
 import ConcurrencyExtras
 import GRDB
+import OrderedCollections
 
 /// A collection of query results grouped into sections.
 ///
@@ -30,120 +31,79 @@ import GRDB
 /// sectioned column.
 public struct ResultsSectionCollection<Element, SectionName: Hashable> {
   let elements: [Element]
-  private let sections: [ResultsSection<Element, SectionName>]
-  private let sectionIndicesByName: [SectionName: Int]
-
-  private init(
-    elements: [Element],
-    sections: [ResultsSection<Element, SectionName>],
-    sectionIndicesByName: [SectionName: Int]
-  ) {
-    self.elements = elements
-    self.sections = sections
-    self.sectionIndicesByName = sectionIndicesByName
-  }
+  private let sections: OrderedDictionary<SectionName, [Element]>
 
   init() {
-    self.init(elements: [], sections: [], sectionIndicesByName: [:])
+    elements = []
+    sections = [:]
   }
 
   init(elements: some Sequence<Element>, sectionName: (Element) -> SectionName) {
-    var builder = Builder()
+    var allElements: [Element] = []
+    var sections: OrderedDictionary<SectionName, [Element]> = [:]
     for element in elements {
-      builder.append(element, sectionName: sectionName(element))
+      allElements.append(element)
+      sections[sectionName(element), default: []].append(element)
     }
-    self = builder.finish()
+    self.elements = allElements
+    self.sections = sections
   }
 
   init(elements: [Element], sectionName: SectionName) {
-    if elements.isEmpty {
-      self.init()
-    } else {
-      self.init(
-        elements: elements,
-        sections: [
-          ResultsSection(name: sectionName, base: elements, elementIndices: Array(elements.indices))
-        ],
-        sectionIndicesByName: [sectionName: 0]
-      )
-    }
+    self.elements = elements
+    self.sections = elements.isEmpty ? [:] : [sectionName: elements]
   }
 
   init(cursor: QueryCursor<Element>, sectionName: (Element) -> SectionName) throws {
-    var builder = Builder()
+    var elements: [Element] = []
+    var sections: OrderedDictionary<SectionName, [Element]> = [:]
     while let element = try cursor.next() {
-      builder.append(element, sectionName: sectionName(element))
+      elements.append(element)
+      sections[sectionName(element), default: []].append(element)
     }
-    self = builder.finish()
+    self.elements = elements
+    self.sections = sections
   }
 
   /// The names of each section in the collection, in the order the sections appear.
   public var sectionNames: [SectionName] {
-    sections.map(\.name)
+    Array(sections.keys)
   }
 
   /// Returns the section with the given name, or `nil` if no such section exists.
   ///
   /// - Parameter name: The name of a section.
   public subscript(sectionName name: SectionName) -> ResultsSection<Element, SectionName>? {
-    sectionIndicesByName[name].map { sections[$0] }
+    sections[name].map { ResultsSection(name: name, elements: $0) }
   }
 
   /// Returns whether or not the collection contains a section with the given name.
   ///
   /// - Parameter name: The name of a section.
   public func contains(sectionName name: SectionName) -> Bool {
-    sectionIndicesByName[name] != nil
+    sections.keys.contains(name)
   }
 
   /// Returns the position of the section with the given name, or `nil` if no such section exists.
   ///
   /// - Parameter name: The name of a section.
   public func index(ofSectionNamed name: SectionName) -> Int? {
-    sectionIndicesByName[name]
-  }
-
-  private struct Builder {
-    private var elements: [Element] = []
-    private var names: [SectionName] = []
-    private var elementIndices: [[Int]] = []
-    private var sectionIndicesByName: [SectionName: Int] = [:]
-
-    mutating func append(_ element: Element, sectionName: SectionName) {
-      let elementIndex = elements.count
-      elements.append(element)
-      if let sectionIndex = sectionIndicesByName[sectionName] {
-        elementIndices[sectionIndex].append(elementIndex)
-      } else {
-        sectionIndicesByName[sectionName] = names.count
-        names.append(sectionName)
-        elementIndices.append([elementIndex])
-      }
-    }
-
-    func finish() -> ResultsSectionCollection {
-      ResultsSectionCollection(
-        elements: elements,
-        sections: zip(names, elementIndices).map {
-          ResultsSection(name: $0, base: elements, elementIndices: $1)
-        },
-        sectionIndicesByName: sectionIndicesByName
-      )
-    }
+    sections.index(forKey: name)
   }
 }
 
 extension ResultsSectionCollection: RandomAccessCollection {
   public var startIndex: Int {
-    sections.startIndex
+    sections.elements.startIndex
   }
 
   public var endIndex: Int {
-    sections.endIndex
+    sections.elements.endIndex
   }
 
   public subscript(position: Int) -> ResultsSection<Element, SectionName> {
-    sections[position]
+    let (name, elements) = sections.elements[position]
+    return ResultsSection(name: name, elements: elements)
   }
 }
 
@@ -164,13 +124,11 @@ public struct ResultsSection<Element, SectionName: Hashable>: Identifiable {
   /// This is the value at the `sectionBy:` key path shared by every element in the section.
   public let name: SectionName
 
-  private let base: [Element]
-  private let elementIndices: [Int]
+  private let elements: [Element]
 
-  init(name: SectionName, base: [Element], elementIndices: [Int]) {
+  init(name: SectionName, elements: [Element]) {
     self.name = name
-    self.base = base
-    self.elementIndices = elementIndices
+    self.elements = elements
   }
 
   /// The identity of the section, equivalent to its ``name``.
@@ -181,15 +139,15 @@ public struct ResultsSection<Element, SectionName: Hashable>: Identifiable {
 
 extension ResultsSection: RandomAccessCollection {
   public var startIndex: Int {
-    0
+    elements.startIndex
   }
 
   public var endIndex: Int {
-    elementIndices.count
+    elements.endIndex
   }
 
   public subscript(position: Int) -> Element {
-    base[elementIndices[position]]
+    elements[position]
   }
 }
 
@@ -197,7 +155,7 @@ extension ResultsSection: Sendable where Element: Sendable, SectionName: Sendabl
 
 extension ResultsSection: Equatable where Element: Equatable {
   public static func == (lhs: Self, rhs: Self) -> Bool {
-    lhs.name == rhs.name && lhs.elementsEqual(rhs)
+    lhs.name == rhs.name && lhs.elements == rhs.elements
   }
 }
 
