@@ -613,7 +613,7 @@ extension FetchAll: Equatable where Element: Equatable {
   }
 #endif
 
-private struct FetchAllStatementValueRequest<Value: QueryRepresentable>: StatementKeyRequest {
+struct FetchAllStatementValueRequest<Value: QueryRepresentable>: StatementKeyRequest {
   let statement: SQLQueryExpression<Value>
   init(statement: some StructuredQueriesCore.Statement<Value>) {
     self.statement = SQLQueryExpression(statement)

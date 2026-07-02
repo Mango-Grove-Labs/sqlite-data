@@ -55,6 +55,20 @@ public struct ResultsSectionCollection<Element, SectionName: Hashable> {
     self = builder.finish()
   }
 
+  init(elements: [Element], sectionName: SectionName) {
+    if elements.isEmpty {
+      self.init()
+    } else {
+      self.init(
+        elements: elements,
+        sections: [
+          ResultsSection(name: sectionName, base: elements, elementIndices: Array(elements.indices))
+        ],
+        sectionIndicesByName: [sectionName: 0]
+      )
+    }
+  }
+
   init(cursor: QueryCursor<Element>, sectionName: (Element) -> SectionName) throws {
     var builder = Builder()
     while let element = try cursor.next() {

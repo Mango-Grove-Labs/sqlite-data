@@ -139,13 +139,49 @@ struct FetchAllSectionsTests {
     $reminders = FetchAll(SectionedReminder.order(by: \.title))
     try await $reminders.load()
     #expect(reminders.map(\.title) == ["Dishes", "Groceries", "Laundry", "Review", "Standup"])
-    #expect($reminders.sections.isEmpty)
+    #expect($reminders.sections.sectionNames == [""])
+    #expect($reminders.sections[0].count == 5)
+  }
+
+  @Test func nilSectionBy() async throws {
+    let sectionKeyPath: KeyPath<SectionedReminder, String>? = nil
+    @FetchAll(SectionedReminder.order(by: \.id), sectionBy: sectionKeyPath) var reminders
+    try await $reminders.load()
+
+    #expect(reminders.map(\.id) == [1, 2, 3, 4, 5])
+    #expect($reminders.sections.sectionNames == [""])
+    #expect($reminders.sections[0].map(\.id) == [1, 2, 3, 4, 5])
+  }
+
+  @Test func nilSectionByWholeTable() async throws {
+    @FetchAll(sectionBy: nil as KeyPath<SectionedReminder, String>?) var reminders
+    try await $reminders.load()
+
+    #expect(reminders.count == 5)
+    #expect($reminders.sections.sectionNames == [""])
+  }
+
+  @Test func loadNilSectionBy() async throws {
+    @FetchAll(SectionedReminder.order(by: \.id), sectionBy: \.category) var reminders
+    try await $reminders.load()
+    #expect($reminders.sections.sectionNames == ["Home", "Work", "Errands"])
+
+    try await $reminders.load(
+      SectionedReminder.order(by: \.id),
+      sectionBy: nil as KeyPath<SectionedReminder, String>?
+    )
+    #expect(reminders.map(\.id) == [1, 2, 3, 4, 5])
+    #expect($reminders.sections.sectionNames == [""])
+
+    try await $reminders.load(SectionedReminder.where { $0.id <= 2 }.order(by: \.id))
+    #expect(reminders.map(\.title) == ["Dishes", "Standup"])
+    #expect($reminders.sections.sectionNames == [""])
   }
 
   @Test func loadSectionBy() async throws {
     @FetchAll(SectionedReminder.order(by: \.id)) var reminders
     try await $reminders.load()
-    #expect($reminders.sections.isEmpty)
+    #expect($reminders.sections.sectionNames == [""])
 
     try await $reminders.load(SectionedReminder.order(by: \.id), sectionBy: \.category)
     #expect(reminders.count == 5)
@@ -180,6 +216,16 @@ struct FetchAllSectionsTests {
     try await $reminders.load()
 
     #expect(!reminders.isEmpty)
+    #expect($reminders.sections.count == 1)
+    #expect($reminders.sections.sectionNames == [""])
+    #expect($reminders.sections[sectionName: ""]?.map(\.id) == reminders.map(\.id))
+  }
+
+  @Test func sectionsAccessWithoutSectionByEmptyResults() async throws {
+    @FetchAll(SectionedReminder.where { $0.id > 100 }) var reminders
+    try await $reminders.load()
+
+    #expect(reminders.isEmpty)
     #expect($reminders.sections.isEmpty)
   }
 }
