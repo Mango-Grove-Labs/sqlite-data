@@ -5,12 +5,12 @@
   import Sharing
   import SwiftUI
 
-  final class FetchBox<Value: Sendable>: @unchecked Sendable {
+  final class FetchBox<Value: Sendable, Extra: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: Storage
 
-    init(sharedReader: SharedReader<Value>) {
-      storage = Storage(sharedReader: sharedReader)
+    init(sharedReader: SharedReader<Value>, extra: Extra) {
+      storage = Storage(sharedReader: sharedReader, extra: extra)
     }
 
     var sharedReader: SharedReader<Value> {
@@ -21,6 +21,11 @@
     var fetchKeyID: FetchKeyID? {
       get { lock.withLock { storage.fetchKeyID } }
       set { lock.withLock { storage.fetchKeyID = newValue } }
+    }
+
+    var extra: Extra {
+      get { lock.withLock { storage.extra } }
+      set { lock.withLock { storage.extra = newValue } }
     }
 
     func reconcile(from fresh: FetchBox, propertyName: String) {
@@ -71,15 +76,23 @@
       var sharedReader: SharedReader<Value>
       var fetchKeyID: FetchKeyID?
       var initialValue: Value
+      var extra: Extra
       var swiftUICancellable: AnyCancellable?
       #if DEBUG
         var hasReportedIgnoredReinitialization = false
       #endif
 
-      init(sharedReader: SharedReader<Value>) {
+      init(sharedReader: SharedReader<Value>, extra: Extra) {
         self.sharedReader = sharedReader
         self.initialValue = sharedReader.wrappedValue
+        self.extra = extra
       }
+    }
+  }
+
+  extension FetchBox where Extra == Void {
+    convenience init(sharedReader: SharedReader<Value>) {
+      self.init(sharedReader: sharedReader, extra: ())
     }
   }
 
