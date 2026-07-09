@@ -1676,6 +1676,23 @@
           }
         }
 
+        // MontiSprout fork (27.4d): the library abandons several failed *save* buckets with no retry
+        // and no signal — a record that fails in one of them simply never reaches CloudKit, invisibly
+        // (the field "the classroom never lands on her account" failure). Surface every such dropped
+        // save to the issue reporter with its CKError, so the app's IssueReporting→Sentry bridge
+        // (Phase 27.1c) NAMES the otherwise-unnamed error and the app can raise a "not syncing" state.
+        // Diagnostic only — this does NOT change control flow, and it reports GENERICALLY (no
+        // special-casing per code) so it catches whatever the tester's actual error turns out to be.
+        func reportDroppedSave() {
+          reportIssue(
+            error,
+            """
+            sqlite-data sync: dropped a failed record save with no retry — \
+            recordType=\(failedRecord.recordType) ckError=\(error.code) (\(error.code.rawValue))
+            """
+          )
+        }
+
         switch error.code {
         case .serverRecordChanged:
           guard let serverRecord = error.serverRecord else { continue }
@@ -1693,6 +1710,7 @@
           await clearServerRecord()
 
         case .serverRejectedRequest:
+          reportDroppedSave()
           await clearServerRecord()
 
         case .referenceViolation:
@@ -1809,12 +1827,14 @@
           .badDatabase, .quotaExceeded, .limitExceeded, .userDeletedZone, .tooManyParticipants,
           .alreadyShared, .managedAccountRestricted, .participantMayNeedVerification,
           .serverResponseLost, .assetNotAvailable, .accountTemporarilyUnavailable:
+          reportDroppedSave()
           continue
         #if canImport(FoundationModels)
           case .participantAlreadyInvited:
             continue
         #endif
         @unknown default:
+          reportDroppedSave()
           continue
         }
       }
