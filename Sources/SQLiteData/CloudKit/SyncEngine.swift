@@ -1710,16 +1710,32 @@
           else {
             continue
           }
+          // MontiSprout fork (27.6c): a CASCADE parent-reference violation on a *save* means the
+          // child's parent hasn't landed in the zone YET — not that the child should be destroyed.
+          // Upstream local-DELETEs the child here, which surfaces as user rows that appear and then
+          // vanish (a local-first data-loss bug). Instead, mirror the failed-*delete* handler below:
+          // park the row as unsynced and re-enqueue its save so it lands once the parent syncs. The
+          // non-destructive FK actions (setNull/setDefault) keep their upstream behavior.
+          if foreignKey.onDelete == .cascade {
+            await withErrorReporting(.sqliteDataCloudKitFailure) {
+              try await userDatabase.write { db in
+                try UnsyncedRecordID.insert {
+                  UnsyncedRecordID(recordID: failedRecord.recordID)
+                } onConflictDoUpdate: { _ in
+                }
+                .execute(db)
+              }
+            }
+            newPendingRecordZoneChanges.append(.saveRecord(failedRecord.recordID))
+            continue
+          }
           func open<T>(_: some SynchronizableTable<T>) async throws {
             try await userDatabase.write { db in
               try $_isSynchronizingChanges.withValue(false) {
                 switch foreignKey.onDelete {
                 case .cascade:
-                  try T
-                    .unscoped
-                    .where { #sql("\($0.primaryKey) = \(bind: recordPrimaryKey)") }
-                    .delete()
-                    .execute(db)
+                  // MontiSprout fork (27.6c): handled above (parked + re-enqueued, never deleted).
+                  break
                 case .restrict:
                   preconditionFailure(
                     "'RESTRICT' foreign key actions not supported for parent relationships."
