@@ -595,9 +595,13 @@
         // remote tag, and CloudKit rejects it with `.serverRejectedRequest`. The fork reports every
         // silently-dropped failed save with its CKError (so the app can name it in Sentry), which
         // surfaces here as a recorded issue. It is expected — the records still reconcile below.
-        await withKnownIssue {
+        // The matcher scopes the pass to exactly that report, so any OTHER issue recorded during
+        // this round still fails the test.
+        try await withKnownIssue {
           try await syncEngine.processPendingRecordZoneChanges(scope: .private)
           await modifications.notify()
+        } matching: { issue in
+          issue.description.contains("dropped a failed record save with no retry")
         }
 
         assertQuery(Tag.all, database: userDatabase.database) {
