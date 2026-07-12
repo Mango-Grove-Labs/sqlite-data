@@ -42,7 +42,11 @@
         try await syncEngine.processPendingRecordZoneChanges(scope: .private)
 
         try await userDatabase.read { db in
-          try #expect(Reminder.find(1).fetchCount(db) == 0)
+          // MontiSprout fork (27.6c): the reminder is KEPT, not local-deleted — its rejected save is
+          // parked and re-enqueued rather than dropped. Its move to the now-deleted list 2 does not
+          // survive the conflict; it lands back on list 1 (the row is preserved even though that
+          // edit is not). Upstream deleted the reminder here (`fetchCount == 0`).
+          try #expect(Reminder.find(1).fetchCount(db) == 1)
           try #expect(RemindersList.find(2).fetchCount(db) == 0)
         }
         assertInlineSnapshot(of: container, as: .customDump) {
@@ -52,6 +56,16 @@
               databaseScope: .private,
               storage: [
                 [0]: CKRecord(
+                  recordID: CKRecord.ID(1:reminders/zone/__defaultOwner__),
+                  recordType: "reminders",
+                  parent: CKReference(recordID: CKRecord.ID(1:remindersLists/zone/__defaultOwner__)),
+                  share: nil,
+                  id: 1,
+                  isCompleted: 0,
+                  remindersListID: 1,
+                  title: "Get milk"
+                ),
+                [1]: CKRecord(
                   recordID: CKRecord.ID(1:remindersLists/zone/__defaultOwner__),
                   recordType: "remindersLists",
                   parent: nil,
@@ -70,7 +84,11 @@
         }
 
         try await userDatabase.read { db in
-          try #expect(Reminder.count().fetchOne(db) == 0)
+          try #expect(
+            Reminder.all.fetchAll(db) == [
+              Reminder(id: 1, title: "Get milk", remindersListID: 1)
+            ]
+          )
           try #expect(
             RemindersList.all.fetchAll(db) == [
               RemindersList(id: 1, title: "Personal")
