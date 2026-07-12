@@ -591,8 +591,14 @@
             Tag(title: "tag")
           }
         }
-        try await syncEngine.processPendingRecordZoneChanges(scope: .private)
-        await modifications.notify()
+        // MontiSprout fork (27.4d): pushing the locally-created tag now conflicts with the identical
+        // remote tag, and CloudKit rejects it with `.serverRejectedRequest`. The fork reports every
+        // silently-dropped failed save with its CKError (so the app can name it in Sentry), which
+        // surfaces here as a recorded issue. It is expected — the records still reconcile below.
+        await withKnownIssue {
+          try await syncEngine.processPendingRecordZoneChanges(scope: .private)
+          await modifications.notify()
+        }
 
         assertQuery(Tag.all, database: userDatabase.database) {
           """
