@@ -25,6 +25,19 @@ upstream behavior.
 Deliberate consequence (owner call, 2026-07-11): on a parent that is *permanently* gone, the
 child is **kept** as a local orphan rather than silently deleted — data over orphan-avoidance.
 
+Known limitations (accepted; observability planned in the consumer's MangoSyncKit work):
+
+- **Unbounded re-send on a permanently-gone parent.** The park re-enqueues the child's save on
+  every failure, so a child whose parent never lands re-sends and re-fails each sync round
+  indefinitely (network/battery churn + a patch-2 report per round). No cap by design — a cap
+  is a data-affecting policy the consumer must choose deliberately.
+- **Crash-window park drop.** The re-enqueued `.saveRecord` lives in CKSyncEngine's in-memory
+  state until its next serialization; if the process dies before that, the relaunch's fetch-side
+  unsynced drain sees `.unknownItem` for the parked ID (the record never reached the server) and
+  clears the park row without re-enqueueing. The child is then local-only with no retry until a
+  force-re-upload or account-change re-enqueue. Surface via sync-health trends, don't rely on
+  the park row as a durable retry ledger.
+
 ### 2. Report every silently-dropped failed SAVE with its CKError
 
 *MontiSprout Phase 27.4d — observability for the invisible failure.*
@@ -62,9 +75,10 @@ still carries the CASCADE local-delete). The patches are ours to carry indefinit
 
 - **Pin by revision** (`.package(url: "git@github.com:Mango-Grove-Labs/sqlite-data.git",
   revision: "<sha>")`) — never by branch or version range.
-- **All Mango apps pin the *same* revision.** If two `Package.swift`s in one dependency graph
-  pin this package (e.g. an app + MangoSyncKit), SPM unifies by package identity — mismatched
-  revisions fail resolution. Bump in lockstep, always.
+- **All Mango apps pin the *same* revision AND the same URL string** (the SSH form above). SPM
+  unifies dependencies by package identity — if two `Package.swift`s in one graph (e.g. an app +
+  MangoSyncKit) pin mismatched revisions *or* different URL forms (https vs SSH), resolution
+  fails. Bump in lockstep, always.
 
 ## Rebase procedure (new upstream release `1.X.Y`)
 
