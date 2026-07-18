@@ -63,9 +63,28 @@ let package = Package(
     .package(url: "https://github.com/pointfreeco/swift-perception", from: "2.0.0"),
     .package(url: "https://github.com/pointfreeco/swift-sharing", from: "2.3.0"),
     .package(url: "https://github.com/pointfreeco/swift-snapshot-testing", from: "1.18.4"),
+    // MANGO PATCH 3 — bound this range. Upstream declares an open lower bound (`from:`), so a consumer's
+    // SPM graph silently resolves whatever is newest. The bound pins the minor this branch's base tag is
+    // actually written and tested against: **1.9.0 pins 0.35.0** in its own `Package.resolved`.
+    //
+    // History (the 1.6.6-era outage this patch exists for): 1.6.6 was tested against 0.31.1, but an app
+    // that resolved **0.33.1** misaligned `SyncMetadata`'s generated column decoding on that base. The
+    // sync engine's send path then failed reading every pending record's own metadata row with a bogus
+    // `Expected column 14 ("userModificationTime") to not be NULL`, and the call site cannot tell that
+    // failure from "record deleted", so it REMOVES the pending change. Every record is silently dropped
+    // from the upload queue: outbound sync dies completely, unrecoverably, with no user-visible error.
+    // That shipped: MontiSprout TestFlight 1.0(12) uploaded nothing for six days across two testers'
+    // devices — the suite ran against the pinned minor while consumers resolved a newer one. See
+    // `PendingRecordMetadataDecodeTests` (the tripwire; it fails with the exact production error on a
+    // base/dep mismatch). Full forensics: MontiSprout
+    // `docs/incidents/2026-07-18-metadata-decode-blocks-all-uploads.md`.
+    //
+    // `.upToNextMinor` because swift-structured-queries is pre-1.0, where minor bumps are breaking by
+    // convention: 0.35.x patches stay allowed, and 0.36+ requires a deliberate, tested upgrade of this fork
+    // (rebasing onto an upstream tag that supports it).
     .package(
       url: "https://github.com/pointfreeco/swift-structured-queries",
-      from: "0.36.0",
+      .upToNextMinor(from: "0.35.0"),
       traits: [
         .trait(
           name: "LazyInitializableByDefault",
