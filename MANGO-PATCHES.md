@@ -162,6 +162,60 @@ Known limitation (an upstream defect the patch doesn't cause but newly makes rea
   reached this method through the sign-out handler). Reverting the patch sends `failedClearThrows`
   red (verified 2026-07-25, on the `thrownError != nil` assertion).
 
+### 6. An account-availability transition must park the change for retry, never drop it
+
+*MontiSprout Phase 41.1 — the upload that never resumes.*
+
+Upstream's failed-**save** handler puts `.notAuthenticated` and `.accountTemporarilyUnavailable` in the
+terminal "give up silently" bucket (patch 2's bucket), and the failed-**delete** switch abandons them
+the same way. So a change that is in flight when iCloud signs out, signs in, or has its per-app toggle
+flipped is removed from the queue permanently: the send never happens, and nothing resumes it until an
+app relaunch re-enqueues from the metadata ledger. Observed on hardware during MontiSprout's 1.0(15)
+device matrix (2026-07-25, Sentry 7633019003): a per-app-toggle window dropped a send, the app's
+"Not syncing to iCloud right now" health line lingered past restoration, and the record only landed
+after a relaunch.
+
+The patch re-enqueues instead of dropping, on both paths — the patch-1 idiom applied to a different
+"a failure the engine can't distinguish from a decision" case:
+
+- **save** → `newPendingRecordZoneChanges.append(.saveRecord(…))`, plus a report worded **"parked a
+  failed record save for retry across an account transition"** — deliberately distinct from patch 2's
+  "dropped … with no retry" so a host's telemetry can tell an abandoned record from a retried one.
+  Metadata is left alone (no `clearServerRecord()`): the server's copy is unknown, not stale.
+- **delete** → `state.add(pendingRecordZoneChanges: [.deleteRecord(…)])`. Silent, because upstream
+  reports nothing on this path (patch 2 covers saves only) and the branch runs inside the enclosing
+  write. Without it, a delete abandoned in a transition leaves the record alive in the zone and the
+  next fetch resurrects the row the user deleted.
+
+**Scoped to the two transition codes only.** A genuinely restricted or revoked account
+(`.managedAccountRestricted`, `.permissionFailure`, …) keeps upstream's give-up behavior — retrying
+those forever is churn that can never succeed. This is also why the retry is *cheap* where patch 1's
+is not: CKSyncEngine pauses automatic sync while the account is unavailable, so the parked change
+generally waits rather than re-failing every round.
+
+**Not a cross-account leak** (examined 2026-07-25). A parked change cannot follow the user to a
+different iCloud account: the pending set is persisted as CKSyncEngine's `stateSerialization` *in the
+metadatabase*, and the account-change path's `tearDownSyncEngine()` calls `metadatabase.erase()` — so
+the delete-local-data route discards it, while the keep-local-data route re-uploads every local row to
+the new account by design anyway.
+
+Known limitations (accepted):
+
+- **A report per retry round.** While a transition lasts, each round that re-fails re-reports. That is
+  the deliberate trade against patch 2's invisibility; triage on the wording, not the count.
+- **In-memory until serialized.** Same crash-window caveat as patch 1 — the re-enqueued change lives
+  in CKSyncEngine's state, so a process death before its next serialization loses the retry and the
+  row waits for a relaunch (i.e. it degrades to today's behavior, never worse).
+- **Neither half fixes the host's health signal.** The lingering "not syncing" line is a consumer
+  concern (MontiSprout 41.1b), not something the library can clear.
+
+- **`AuthTransitionRetryTests`** — pins the patched contract by injecting failures directly into
+  `handleSentRecordZoneChanges` (the `DroppedSaveReportingTests` idiom): both transition codes
+  re-enqueue their save, `.notAuthenticated` re-enqueues its delete, and the scope boundary holds in
+  both directions (`.quotaExceeded` and `.managedAccountRestricted` still drop, save and delete).
+  Reverting the patch sends the three retry tests red and leaves the three boundary tests green
+  (verified 2026-07-25).
+
 ### Test commits — patch 3 (no library behavior change)
 
 - **`PendingRecordMetadataDecodeTests`** — the tripwire for patch 3. Exercises the send path's
@@ -222,6 +276,10 @@ Reported as [pointfreeco/sqlite-data#485](https://github.com/pointfreeco/sqlite-
 closed with upstream disputing the framing (re-verified 2026-07-10: upstream `main` post-1.6.6
 still carries the CASCADE local-delete). The patches are ours to carry indefinitely.
 
+**Patch 6 is the same class** — "a transient failure is not a verdict on the record" — and rests on
+field evidence upstream has not seen, so assume we carry it too. Not reported so far; worth filing if
+the auth-transition drop is ever reproduced in a form upstream can run.
+
 ## Upstream stance on patch 3
 
 Unlike patches 1–2, patch 3 is **not** a disputed behavior change — bounding a range that upstream
@@ -247,11 +305,13 @@ nothing newer to move to.
 2. Cut `mango/patches-1.X` from tag `1.X.Y`.
 3. Cherry-pick, in order: patch 1 (park guard), patch 2 (dropped-save reporting), patch 3
    (the `swift-structured-queries` bound in `Package.swift`), **patch 5 (the throwing
-   `deleteLocalData()` clear)**, the test commits (take them from the tip of the previous
-   `mango/patches-*` branch). Resolve conflicts by **idiom, not line number** — the `SyncEngine`
-   error-handling region drifts. Patch 3 conflicts every time, because the rebase re-inherits
-   upstream's `from:` declaration — take **ours**. Patches 1 and 5 both live in `SyncEngine`'s
-   error-handling region and are the likeliest to need re-application by idiom.
+   `deleteLocalData()` clear)**, **patch 6 (auth-transition park-and-retry)**, the test commits (take
+   them from the tip of the previous `mango/patches-*` branch). Resolve conflicts by **idiom, not line
+   number** — the `SyncEngine` error-handling region drifts. Patch 3 conflicts every time, because the
+   rebase re-inherits upstream's `from:` declaration — take **ours**. Patches 1, 5 and 6 all live in
+   `SyncEngine`'s error-handling region and are the likeliest to need re-application by idiom; patch 6
+   in particular *removes* two codes from each of two upstream case lists, so a conflict resolved by
+   taking upstream's list silently reverts it (no compile error — the codes just stop retrying).
 4. **Vacuity guard (required), once per behavior patch:**
    - `git revert --no-commit <patch-1 sha>` → `swift test --filter ReferenceViolationGuardTests`
      must go **red** on `cascadeChild_isParkedAndReEnqueued_notDeleted` (all three assertions);
@@ -259,6 +319,10 @@ nothing newer to move to.
    - `git revert --no-commit <patch-5 sha>` → `swift test --filter DeleteLocalDataFailureTests`
      must go **red** on `failedClearThrows` (the `thrownError != nil` assertion); `git reset --hard`
      → green.
+   - `git revert --no-commit <patch-6 sha>` → `swift test --filter AuthTransitionRetryTests` must go
+     **red** on all three retry tests (`notAuthenticatedSave_…`,
+     `accountTemporarilyUnavailableSave_…`, `notAuthenticatedDelete_…`) while the three boundary tests
+     stay green; `git reset --hard` → green.
 
    A rebase that skips these can silently drop a guard.
 5. **Manifest check (required):** confirm `Package.swift` still carries an `.upToNextMinor`

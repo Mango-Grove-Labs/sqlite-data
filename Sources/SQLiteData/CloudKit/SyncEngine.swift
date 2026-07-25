@@ -1722,6 +1722,19 @@
           )
         }
 
+        // MontiSprout fork (41.1): the parked-for-retry twin of the report above. Deliberately
+        // WORDED DIFFERENTLY so a host's telemetry can tell "this record was abandoned" from "this
+        // record will be retried" — the two demand opposite responses from whoever reads the event.
+        func reportParkedSave() {
+          reportIssue(
+            error,
+            """
+            sqlite-data sync: parked a failed record save for retry across an account transition — \
+            recordType=\(failedRecord.recordType) ckError=\(error.code) (\(error.code.rawValue))
+            """
+          )
+        }
+
         switch error.code {
         case .serverRecordChanged:
           guard let serverRecord = error.serverRecord else { continue }
@@ -1848,14 +1861,30 @@
           newPendingRecordZoneChanges.append(.saveRecord(failedRecord.recordID))
           break
 
+        // MontiSprout fork (41.1): an account-availability transition is not a verdict on the
+        // record. Upstream drops these saves into the terminal bucket below — no retry — so a send
+        // that lands inside an iCloud sign-in/sign-out or per-app-toggle window leaves the row
+        // permanently unsent, and nothing resumes it until an app relaunch re-enqueues from the
+        // ledger (observed on hardware 2026-07-25, MontiSprout 1.0(15) matrix, Sentry 7633019003).
+        // Re-enqueue the save instead, patch-1 style: CKSyncEngine holds the pending change while
+        // the account is unavailable and sends it once availability returns.
+        //
+        // Scoped to the two TRANSITION codes only. A genuinely revoked or restricted account
+        // (.managedAccountRestricted, .permissionFailure, …) keeps upstream's give-up behavior —
+        // retrying those forever would be churn with no possible success.
+        case .notAuthenticated, .accountTemporarilyUnavailable:
+          reportParkedSave()
+          newPendingRecordZoneChanges.append(.saveRecord(failedRecord.recordID))
+          continue
+
         case .networkFailure, .networkUnavailable, .zoneBusy, .serviceUnavailable,
-          .notAuthenticated, .operationCancelled,
+          .operationCancelled,
           .internalError, .partialFailure, .badContainer, .requestRateLimited, .missingEntitlement,
           .invalidArguments, .resultsTruncated, .assetFileNotFound,
           .assetFileModified, .incompatibleVersion, .constraintViolation, .changeTokenExpired,
           .badDatabase, .quotaExceeded, .limitExceeded, .userDeletedZone, .tooManyParticipants,
           .alreadyShared, .managedAccountRestricted, .participantMayNeedVerification,
-          .serverResponseLost, .assetNotAvailable, .accountTemporarilyUnavailable:
+          .serverResponseLost, .assetNotAvailable:
           reportDroppedSave()
           continue
         #if canImport(FoundationModels)
@@ -1886,14 +1915,23 @@
               case .batchRequestFailed:
                 syncEngine.state.add(pendingRecordZoneChanges: [.deleteRecord(failedRecordID)])
                 break
+              // MontiSprout fork (41.1): the failed-DELETE half of the same fix. A delete abandoned
+              // inside an account transition leaves the record alive in the zone, so the next fetch
+              // resurrects the row the teacher deleted — the same "a transition is not a verdict"
+              // shape as the save side above. Re-enqueue rather than drop; the transition codes only.
+              // Silent by design: upstream reports nothing on this path (patch 2 covers saves only),
+              // and this branch runs inside the enclosing write, which is no place to report from.
+              case .notAuthenticated, .accountTemporarilyUnavailable:
+                syncEngine.state.add(pendingRecordZoneChanges: [.deleteRecord(failedRecordID)])
+                break
               case .networkFailure, .networkUnavailable, .zoneBusy, .serviceUnavailable,
-                .notAuthenticated, .operationCancelled, .internalError, .partialFailure,
+                .operationCancelled, .internalError, .partialFailure,
                 .badContainer, .requestRateLimited, .missingEntitlement, .invalidArguments,
                 .resultsTruncated, .assetFileNotFound, .assetFileModified, .incompatibleVersion,
                 .constraintViolation, .changeTokenExpired, .badDatabase, .quotaExceeded,
                 .limitExceeded, .userDeletedZone, .tooManyParticipants, .alreadyShared,
                 .managedAccountRestricted, .participantMayNeedVerification, .serverResponseLost,
-                .assetNotAvailable, .accountTemporarilyUnavailable, .permissionFailure,
+                .assetNotAvailable, .permissionFailure,
                 .unknownItem, .serverRecordChanged, .serverRejectedRequest, .zoneNotFound:
                 break
               #if canImport(FoundationModels)
