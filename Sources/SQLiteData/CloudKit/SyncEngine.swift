@@ -2029,7 +2029,9 @@
             lastKnownServerRecord: serverRecord,
             _lastKnownServerRecordAllFields: serverRecord,
             share: nil,
-            userModificationTime: serverRecord.userModificationTime
+            userModificationTime: serverRecord.userModificationTime,
+            // Patch 7: the insert half of the mirror (the update half is `setLastKnownServerRecord`).
+            serverUserModificationTime: serverRecord.userModificationTime
           )
         } onConflict: {
           ($0.recordPrimaryKey, $0.recordType)
@@ -2549,6 +2551,11 @@
       self.ownerName = lastKnownServerRecord?.recordID.zoneID.ownerName ?? self.ownerName
       self.lastKnownServerRecord = #bind(lastKnownServerRecord)
       self._lastKnownServerRecordAllFields = #bind(lastKnownServerRecord)
+      // MontiSprout fork (41.2b, patch 7): mirror the server record's own stamp beside the archive.
+      // Every write of `lastKnownServerRecord` funnels through here, so the mirror cannot drift from what
+      // it describes — including the clearing case, where a nil record must nil the mirror rather than
+      // leave a time that would read as "in sync" with a server copy that no longer exists.
+      self.serverUserModificationTime = #bind(lastKnownServerRecord?.userModificationTime)
       if let lastKnownServerRecord {
         self.userModificationTime = #sql(
           """

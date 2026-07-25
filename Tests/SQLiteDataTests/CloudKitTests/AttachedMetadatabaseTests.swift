@@ -60,7 +60,8 @@
           │                     │   _isDeleted: false,                                               │
           │                     │   _hasLastKnownServerRecord: true,                                 │
           │                     │   _isShared: false,                                                │
-          │                     │   userModificationTime: 0                                          │
+          │                     │   userModificationTime: 0,                                         │
+          │                     │   serverUserModificationTime: 0                                    │
           │                     │ )                                                                  │
           └─────────────────────┴────────────────────────────────────────────────────────────────────┘
           """
