@@ -125,6 +125,36 @@ arguably wrong").
   1.6.6; repaired with a bounded settle loop + `withKnownIssue(isIntermittent:)` for a residual
   mock-atomicity gap (see that commit's message for the full mechanism).
 
+## Candidate patches (not yet written)
+
+### 4. A failed `CKAsset` download must not be written as `NULL`
+
+*MontiSprout, observed 2026-07-19 (Sentry 7619718981) — **candidate, not implemented**.*
+
+On the fetch path, a record whose `CKAsset` fails to materialise yields a nil value, and the engine writes
+it straight into the local column. Where that column is `NOT NULL` — as any "the bytes themselves" column
+will be — SQLite rejects the row:
+
+```
+SQLite error 19: NOT NULL constraint failed: mediaBlobs.data
+INSERT INTO "mediaBlobs" ("id","classroomID","data","createdAt") VALUES (?, ?, NULL, ?) ON CONFLICT…
+```
+
+A transient asset-download failure therefore becomes a **constraint violation**, not a retry. The record is
+dropped from that fetch with no queued recovery — the same "a failure the engine can't distinguish from a
+decision" shape as patch 1.
+
+**Proposed:** when an expected asset is nil, skip the row and leave it unsynced (or park it, patch-1 style)
+so the next fetch retries, rather than attempting an insert that cannot succeed.
+
+**Not yet reproduced deliberately.** Observed only on a device that had just crossed CloudKit
+Development→Production, so the trigger may be stale cross-environment asset references rather than a plain
+download failure. No data loss was observed (every `mediaItem` still had its blob on both devices) — the
+insert fails, so nothing local is overwritten. Worth reproducing with a deliberately failed asset download
+before writing the patch.
+
+Full context: MontiSprout `docs/incidents/2026-07-18-metadata-decode-blocks-all-uploads.md` § Addendum.
+
 ## Why upstream won't take patches 1–2
 
 Reported as [pointfreeco/sqlite-data#485](https://github.com/pointfreeco/sqlite-data/issues/485);
