@@ -6,7 +6,9 @@ API-compatible with upstream — no app imports a fork-only symbol; patches chan
 dependency manifest, never the public API. Library bugs get fixed **here**, never re-implemented
 or shadowed in an app or wrapper package.
 
-**Consumer branch: `mango/patches-1.6`** — upstream tag `1.6.6` + the patches below.
+**Consumer branch: `mango/patches-1.7`** — upstream tag `1.7.0` + the patches below.
+(Previous: `mango/patches-1.6` = tag `1.6.6` + the same stack — kept intact; consumer pins on it
+stay valid. Rebased 2026-07-25; only patch 3 conflicted, retargeted per the procedure's step 5.)
 
 ## The patches
 
@@ -71,9 +73,13 @@ distinguish "record is gone" from "I failed to read it" and runs
 permanently. **MontiSprout TestFlight 1.0(12) uploaded nothing for six days across two testers'
 devices** while the app's sync health reported "ok".
 
-The patch: `.upToNextMinor(from: "0.31.1")`. Pre-1.0 minor bumps are breaking by convention, so
-0.31.x patches stay allowed and **0.32+ becomes a deliberate, tested fork upgrade** (rebase onto
-an upstream tag that supports it) rather than something a consumer's resolver decides silently.
+The patch: bound the range to the minor the base tag is tested against. On the 1.6.6 base that
+was `.upToNextMinor(from: "0.31.1")`; on the current 1.7.0 base it is
+**`.upToNextMinor(from: "0.33.2")`** (1.7.0's own `Package.resolved` pin — upstream moved to
+0.33.x and absorbed the decode misalignment in its own code). Pre-1.0 minor bumps are breaking by
+convention, so same-minor patches stay allowed and **the next minor becomes a deliberate, tested
+fork upgrade** (rebase onto an upstream tag that supports it) rather than something a consumer's
+resolver decides silently.
 
 ⚠️ **This is a class of bug, not a one-off.** Any unbounded `from:` in this manifest can do the
 same thing to a consumer. Treat a widened range as a library change requiring the full suite.
@@ -193,9 +199,10 @@ nothing newer to move to.
    `swift test --filter ReferenceViolationGuardTests` must go **red** on
    `cascadeChild_isParkedAndReEnqueued_notDeleted` (all three assertions); `git reset --hard`
    → green. A rebase that skips this can silently drop the guard.
-5. **Manifest check (required):** confirm `Package.swift` still reads
-   `.upToNextMinor(from: "0.31.1")` for `swift-structured-queries` — unless the new upstream tag is
-   written against a later version, in which case bound it to *that* minor. **No test can catch a
+5. **Manifest check (required):** confirm `Package.swift` still carries an `.upToNextMinor`
+   bound for `swift-structured-queries` matching the base tag's own `Package.resolved` pin
+   (currently `.upToNextMinor(from: "0.33.2")` on `mango/patches-1.7`) — the new upstream tag's
+   tested minor, not the previous branch's literal. **No test can catch a
    dropped patch 3**: the suite resolves via this repo's own `Package.resolved` and stays green on
    any version, which is exactly how the original outage reached the field. Check it by eye.
 6. Full `swift test` green (known-intermittent issues aside), twice.
