@@ -758,21 +758,43 @@
     ///
     /// > Important: It is only appropriate to call this method when the device's iCloud account
     /// > logs out or changes.
+    ///
+    /// > Warning: If the clear fails, this method **throws** and the sync engine is deliberately
+    /// > left **stopped** (MANGO PATCH 5). The failed write is rolled back — so every row survives
+    /// > and the sync triggers are gone, which is why a running engine would silently track
+    /// > nothing — while the metadatabase erase that precedes it stands. A second call cannot
+    /// > recover: it throws `no such trigger` from the teardown before reaching the clear.
+    /// > Recovery is a fresh sync engine (app relaunch), not a retry.
+    ///
+    /// - Throws: Any error raised while clearing the synchronized tables or re-installing the
+    ///   sync triggers. Upstream reported these as issues and returned normally; this fork
+    ///   propagates them so a caller cannot mistake a failed clear for a successful one.
     public func deleteLocalData() async throws {
       stop()
       try tearDownSyncEngine()
-      await withErrorReporting(.sqliteDataCloudKitFailure) {
-        try await userDatabase.write { db in
-          for table in tables {
-            func open<T>(_: some SynchronizableTable<T>) {
-              withErrorReporting(.sqliteDataCloudKitFailure) {
-                try T.delete().execute(db)
-              }
-            }
-            open(table)
+      // MANGO PATCH 5 — a failed clear must THROW, never report-and-continue.
+      //
+      // Upstream wraps this write in `withErrorReporting` (outer) and each per-table delete in its
+      // own `withErrorReporting` (inner), so every failure is swallowed into a reported issue and
+      // the method returns as if it succeeded. Worse, the write's final statement is
+      // `setUpSyncEngine(writableDB:)`, whose throw rolls back the WHOLE transaction — every
+      // delete undone — while `tearDownSyncEngine()`'s metadatabase erase (a prior,
+      // non-transactional step) stands. Field shape: a "successful" reset that erased the sync
+      // metadata and left every user row in place (MontiSprout incident
+      // `2026-07-20-resetfresh-left-local-data-cross-env`; repro: `DeleteLocalDataFailureTests`).
+      //
+      // The engine is deliberately NOT restarted on failure: after the rollback the sync triggers
+      // are gone, so a running engine would silently track nothing — stopped is the honest state.
+      // The library's own account-change call site already wraps this call in
+      // `withErrorReporting`, so the automatic sign-out path keeps upstream's report-only behavior.
+      try await userDatabase.write { db in
+        for table in tables {
+          func open<T>(_: some SynchronizableTable<T>) throws {
+            try T.delete().execute(db)
           }
-          try setUpSyncEngine(writableDB: db)
+          try open(table)
         }
+        try setUpSyncEngine(writableDB: db)
       }
       try await start()
     }
