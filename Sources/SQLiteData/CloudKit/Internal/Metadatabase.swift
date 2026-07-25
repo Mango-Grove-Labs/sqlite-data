@@ -124,6 +124,36 @@
       )
       .execute(db)
     }
+    // MontiSprout fork (41.2b, PATCH 7): mirror the server record's own `userModificationTime` into a
+    // plain column. Every consumer number for "waiting to upload" is derived from
+    // `lastKnownServerRecord`, so it measures "has this row ever reached the server" and is structurally
+    // blind to an **update to an already-synced row** — the row keeps its (older) server record, so the
+    // count reads 0 while the edit is unsent. The comparison that sees it lives inside the archived
+    // record's `encryptedValues`, which no SQL can reach; mirroring it makes
+    // `userModificationTime > serverUserModificationTime` an ordinary indexed-ish predicate.
+    //
+    // A NEW migration, never an edit to the released one (the assertion below exists to enforce that).
+    // The backfill assumes rows that already have a server record are in sync at migration time: we
+    // cannot know better without unarchiving every blob, the assumption is right for every row that
+    // isn't mid-edit, and a wrong guess self-corrects on that row's next round trip.
+    migrator.registerMigration("Mango: mirror the server userModificationTime") { db in
+      try #sql(
+        """
+        ALTER TABLE "\(raw: .sqliteDataCloudKitSchemaName)_metadata"
+        ADD COLUMN "serverUserModificationTime" INTEGER
+        """
+      )
+      .execute(db)
+      try #sql(
+        """
+        UPDATE "\(raw: .sqliteDataCloudKitSchemaName)_metadata"
+           SET "serverUserModificationTime" = "userModificationTime"
+         WHERE "lastKnownServerRecord" IS NOT NULL
+        """
+      )
+      .execute(db)
+    }
+
     #if DEBUG
       try metadatabase.read { db in
         let hasSchemaChanges = try migrator.hasSchemaChanges(db)

@@ -108,6 +108,16 @@
     /// The time the user last modified the record.
     public let userModificationTime: Int64
 
+    /// The `userModificationTime` carried by the last known **server** record, mirrored out of the
+    /// archive so SQL can read it (MontiSprout fork, patch 7).
+    ///
+    /// `nil` when the record has never reached the server. Equal to ``userModificationTime`` right after
+    /// a successful round trip, and **less than** it exactly while a local edit is unsent — the one
+    /// state every `lastKnownServerRecord`-derived count is blind to, since an update leaves the (older)
+    /// server record in place. There is no other SQL-visible form: the value lives in the record's
+    /// `encryptedValues`, which only the all-fields archive carries.
+    public let serverUserModificationTime: Int64?
+
     public var hasLastKnownServerRecord: Bool {
       lastKnownServerRecord != nil
     }
@@ -171,7 +181,8 @@
       lastKnownServerRecord: CKRecord? = nil,
       _lastKnownServerRecordAllFields: CKRecord? = nil,
       share: CKShare? = nil,
-      userModificationTime: Int64
+      userModificationTime: Int64,
+      serverUserModificationTime: Int64? = nil
     ) {
       self.id = ID(recordPrimaryKey: recordPrimaryKey, recordType: recordType)
       self.recordName = "\(recordPrimaryKey):\(recordType)"
@@ -193,6 +204,7 @@
       self._hasLastKnownServerRecord = lastKnownServerRecord != nil
       self._isShared = share != nil
       self.userModificationTime = userModificationTime
+      self.serverUserModificationTime = serverUserModificationTime
       self._isDeleted = false
     }
 

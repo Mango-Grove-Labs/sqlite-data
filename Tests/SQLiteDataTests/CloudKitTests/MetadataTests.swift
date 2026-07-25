@@ -239,7 +239,8 @@
           │   _isDeleted: false,                                                                    │
           │   _hasLastKnownServerRecord: true,                                                      │
           │   _isShared: false,                                                                     │
-          │   userModificationTime: 0                                                               │
+          │   userModificationTime: 0,                                                              │
+          │   serverUserModificationTime: 0                                                         │
           │ )                                                                                       │
           ├─────────────────────────────────────────────────────────────────────────────────────────┤
           │ SyncMetadata(                                                                           │
@@ -275,7 +276,8 @@
           │   _isDeleted: false,                                                                    │
           │   _hasLastKnownServerRecord: true,                                                      │
           │   _isShared: false,                                                                     │
-          │   userModificationTime: 0                                                               │
+          │   userModificationTime: 0,                                                              │
+          │   serverUserModificationTime: 0                                                         │
           │ )                                                                                       │
           ├─────────────────────────────────────────────────────────────────────────────────────────┤
           │ SyncMetadata(                                                                           │
@@ -306,7 +308,8 @@
           │   _isDeleted: false,                                                                    │
           │   _hasLastKnownServerRecord: true,                                                      │
           │   _isShared: false,                                                                     │
-          │   userModificationTime: 0                                                               │
+          │   userModificationTime: 0,                                                              │
+          │   serverUserModificationTime: 0                                                         │
           │ )                                                                                       │
           ├─────────────────────────────────────────────────────────────────────────────────────────┤
           │ SyncMetadata(                                                                           │
@@ -338,7 +341,8 @@
           │   _isDeleted: false,                                                                    │
           │   _hasLastKnownServerRecord: true,                                                      │
           │   _isShared: false,                                                                     │
-          │   userModificationTime: 0                                                               │
+          │   userModificationTime: 0,                                                              │
+          │   serverUserModificationTime: 0                                                         │
           │ )                                                                                       │
           ├─────────────────────────────────────────────────────────────────────────────────────────┤
           │ SyncMetadata(                                                                           │
@@ -374,7 +378,8 @@
           │   _isDeleted: false,                                                                    │
           │   _hasLastKnownServerRecord: true,                                                      │
           │   _isShared: false,                                                                     │
-          │   userModificationTime: 0                                                               │
+          │   userModificationTime: 0,                                                              │
+          │   serverUserModificationTime: 0                                                         │
           │ )                                                                                       │
           ├─────────────────────────────────────────────────────────────────────────────────────────┤
           │ SyncMetadata(                                                                           │
@@ -405,7 +410,8 @@
           │   _isDeleted: false,                                                                    │
           │   _hasLastKnownServerRecord: true,                                                      │
           │   _isShared: false,                                                                     │
-          │   userModificationTime: 0                                                               │
+          │   userModificationTime: 0,                                                              │
+          │   serverUserModificationTime: 0                                                         │
           │ )                                                                                       │
           ├─────────────────────────────────────────────────────────────────────────────────────────┤
           │ SyncMetadata(                                                                           │
@@ -437,7 +443,8 @@
           │   _isDeleted: false,                                                                    │
           │   _hasLastKnownServerRecord: true,                                                      │
           │   _isShared: false,                                                                     │
-          │   userModificationTime: 0                                                               │
+          │   userModificationTime: 0,                                                              │
+          │   serverUserModificationTime: 0                                                         │
           │ )                                                                                       │
           ├─────────────────────────────────────────────────────────────────────────────────────────┤
           │ SyncMetadata(                                                                           │
@@ -473,7 +480,8 @@
           │   _isDeleted: false,                                                                    │
           │   _hasLastKnownServerRecord: true,                                                      │
           │   _isShared: false,                                                                     │
-          │   userModificationTime: 0                                                               │
+          │   userModificationTime: 0,                                                              │
+          │   serverUserModificationTime: 0                                                         │
           │ )                                                                                       │
           ├─────────────────────────────────────────────────────────────────────────────────────────┤
           │ SyncMetadata(                                                                           │
@@ -503,7 +511,8 @@
           │   _isDeleted: false,                                                                    │
           │   _hasLastKnownServerRecord: true,                                                      │
           │   _isShared: false,                                                                     │
-          │   userModificationTime: 0                                                               │
+          │   userModificationTime: 0,                                                              │
+          │   serverUserModificationTime: 0                                                         │
           │ )                                                                                       │
           ├─────────────────────────────────────────────────────────────────────────────────────────┤
           │ SyncMetadata(                                                                           │
@@ -533,7 +542,8 @@
           │   _isDeleted: false,                                                                    │
           │   _hasLastKnownServerRecord: true,                                                      │
           │   _isShared: false,                                                                     │
-          │   userModificationTime: 0                                                               │
+          │   userModificationTime: 0,                                                              │
+          │   serverUserModificationTime: 0                                                         │
           │ )                                                                                       │
           └─────────────────────────────────────────────────────────────────────────────────────────┘
           """
@@ -586,7 +596,8 @@
           │                     │   _isDeleted: false,                                               │
           │                     │   _hasLastKnownServerRecord: true,                                 │
           │                     │   _isShared: false,                                                │
-          │                     │   userModificationTime: 0                                          │
+          │                     │   userModificationTime: 0,                                         │
+          │                     │   serverUserModificationTime: 0                                    │
           │                     │ )                                                                  │
           ├─────────────────────┼────────────────────────────────────────────────────────────────────┤
           │ RemindersList(      │ SyncMetadata(                                                      │
@@ -617,7 +628,8 @@
           │                     │   _isDeleted: false,                                               │
           │                     │   _hasLastKnownServerRecord: true,                                 │
           │                     │   _isShared: false,                                                │
-          │                     │   userModificationTime: 0                                          │
+          │                     │   userModificationTime: 0,                                         │
+          │                     │   serverUserModificationTime: 0                                    │
           │                     │ )                                                                  │
           └─────────────────────┴────────────────────────────────────────────────────────────────────┘
           """

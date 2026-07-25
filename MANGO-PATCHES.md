@@ -216,6 +216,49 @@ Known limitations (accepted):
   Reverting the patch sends the three retry tests red and leaves the three boundary tests green
   (verified 2026-07-25).
 
+### 7. Mirror the server record's `userModificationTime` into a column
+
+*MontiSprout Phase 41.2b — make an unsent **edit** countable.*
+
+The characterization below proves the blind spot: every consumer count for "waiting to upload" is derived
+from `lastKnownServerRecord`, so an **update to an already-synced row** reads as confirmed while its save is
+unsent. The comparison that sees it — the metadata's `userModificationTime` versus the server record's own —
+had no SQL form, because that value lives in the record's `encryptedValues` and only the all-fields archive
+carries it. Reading it meant unarchiving a `CKRecord` per row.
+
+The patch adds **`serverUserModificationTime` (INTEGER, nullable)** to the metadata table and keeps it beside
+the archive. `nil` = never reached the server; equal to `userModificationTime` right after a round trip;
+**less than** it exactly while a local edit is unsent. So the probe is an ordinary predicate:
+
+```sql
+SELECT count(*) FROM "sqlitedata_icloud_metadata"
+ WHERE "lastKnownServerRecord" IS NOT NULL
+   AND "serverUserModificationTime" < "userModificationTime"
+   AND "_isDeleted" = 0
+```
+
+Two properties make the mirror trustworthy rather than another thing to drift:
+
+- **One funnel.** Every write of `lastKnownServerRecord` goes through `setLastKnownServerRecord` (plus the
+  single insert in `upsertFromServerRecord`), so both are set in the same statement — including the
+  **clearing** case, where a nil record nils the mirror rather than leaving a stamp that would read as "in
+  sync" with a server copy that no longer exists.
+- **A new migration, never an edit to the released one** — the DEBUG `hasSchemaChanges` assertion exists to
+  enforce exactly that. `"Mango: mirror the server userModificationTime"` adds the column and backfills
+  `= userModificationTime` for rows that already have a server record. That backfill **assumes those rows are
+  in sync at migration time**: we cannot know better without unarchiving every blob, it is right for every
+  row that isn't mid-edit, and a wrong guess self-corrects on that row's next round trip.
+
+⚠️ **Rebase note.** This is the first Mango patch that touches the **metadatabase schema**. Keep the
+migration registered *after* upstream's, keep its name byte-stable (a rename re-runs it and the `ALTER`
+fails), and re-record inline snapshots after a rebase — the column appears in every `SyncMetadata` dump.
+
+- **`UnsentUpdateVisibilityTests`** — pins the mirror end to end (nil before first upload · equal after a
+  round trip · behind while an edit is unsent, with the SQL predicate counting exactly 1 · level again once
+  it lands) and that clearing the server record clears the mirror, driven through the real
+  `.serverRejectedRequest` path. **Read via SQL, never via the archived record** — a mirror test that reads
+  the thing being mirrored passes with the patch reverted (caught by the vacuity guard, 2026-07-25).
+
 ### Characterization — what a "waiting to upload" count derived from `lastKnownServerRecord` cannot see
 
 *MontiSprout Phase 41.2a — no library change; a pinned fact consumers build on.*
@@ -329,8 +372,9 @@ nothing newer to move to.
 2. Cut `mango/patches-1.X` from tag `1.X.Y`.
 3. Cherry-pick, in order: patch 1 (park guard), patch 2 (dropped-save reporting), patch 3
    (the `swift-structured-queries` bound in `Package.swift`), **patch 5 (the throwing
-   `deleteLocalData()` clear)**, **patch 6 (auth-transition park-and-retry)**, the test commits (take
-   them from the tip of the previous `mango/patches-*` branch). Resolve conflicts by **idiom, not line
+   `deleteLocalData()` clear)**, **patch 6 (auth-transition park-and-retry)**, **patch 7 (the mirrored
+   server `userModificationTime` — schema, so keep its migration registered after upstream's)**, the test
+   commits (take them from the tip of the previous `mango/patches-*` branch). Resolve conflicts by **idiom, not line
    number** — the `SyncEngine` error-handling region drifts. Patch 3 conflicts every time, because the
    rebase re-inherits upstream's `from:` declaration — take **ours**. Patches 1, 5 and 6 all live in
    `SyncEngine`'s error-handling region and are the likeliest to need re-application by idiom; patch 6
@@ -347,6 +391,11 @@ nothing newer to move to.
      **red** on all three retry tests (`notAuthenticatedSave_…`,
      `accountTemporarilyUnavailableSave_…`, `notAuthenticatedDelete_…`) while the three boundary tests
      stay green; `git reset --hard` → green.
+   - `git revert --no-commit <patch-7 sha>` → `swift test --filter UnsentUpdateVisibilityTests` must go
+     **red** on `theMirroredServerStampMakesAnUnsentEditCountable` *and*
+     `clearingTheServerRecordClearsTheMirror`, while the characterization test
+     (`anUnsentUpdateIsInvisibleToEveryNeverConfirmedCount`) stays green — it describes upstream behavior,
+     which the patch does not change. `git reset --hard` → green.
 
    A rebase that skips these can silently drop a guard.
 5. **Manifest check (required):** confirm `Package.swift` still carries an `.upToNextMinor`
