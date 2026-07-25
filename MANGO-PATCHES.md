@@ -230,7 +230,8 @@ save never lands leaves every such count reading **0** while the edit is genuine
 
 The discriminator that *does* see it — for whoever implements that probe — is the metadata's
 `userModificationTime` versus the server record's own. A successful save stamps the server record from the
-metadata (`SyncEngine.swift:2052`) and the ack takes the max (`SyncMetadata.swift:2552`), so the two are equal
+metadata (`SyncEngine.swift:2052`) and the ack takes the max (`SyncEngine.swift:2554`, in
+`extension Updates<SyncMetadata>`), so the two are equal
 after a round trip and diverge exactly while an edit is unsent. It must be read from
 **`_lastKnownServerRecordAllFields`**: `userModificationTime` lives in `encryptedValues`, which
 `lastKnownServerRecord`'s system-fields archive does not carry.
