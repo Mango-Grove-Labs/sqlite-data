@@ -107,7 +107,62 @@ The fix should follow patch 1's idiom: a read failure **parks or retries**, and 
 absent record is dropped. Worth doing regardless of root cause (MontiSprout incident, "the guard is
 arguably wrong").
 
-### 5. Test commits — patch 3 (no library behavior change)
+### 5. A failed local clear in `deleteLocalData()` must throw, never report-and-continue
+
+*MontiSprout incident 2026-07-20 (`resetfresh-left-local-data-cross-env`) — the false-success reset.*
+
+Upstream's `deleteLocalData()` wraps its row-clearing write in `withErrorReporting` (and each
+per-table `DELETE` in its own inner `withErrorReporting`), so every failure is swallowed into a
+reported issue and the method returns as if it succeeded. The write's final statement is
+`setUpSyncEngine(writableDB:)` — a throw there **rolls back the entire transaction**, undoing every
+delete, while the metadatabase erase in `tearDownSyncEngine()` (a prior, non-transactional step)
+stands. One swallowed failure therefore produces: clean return, sync metadata gone, **every user
+row still present** — and a caller that treats "didn't throw" as "cleared" (MontiSprout's
+`resetFresh`) renders a false-success report over it. Hit in the field 2026-07-20 (intermittent —
+the 2026-07-25 forensic re-run on the same device cleared correctly); mechanism proven in-process
+by `DeleteLocalDataFailureTests`.
+
+The patch: both `withErrorReporting` wrappers removed — the write's failure **throws** out of
+`deleteLocalData()`. On failure the engine deliberately stays stopped: the rollback removed the
+sync triggers, so a running engine would silently track nothing. The library's own account-change
+call site already wraps this call in `withErrorReporting`, so the automatic sign-out path keeps
+upstream's report-only behavior. Consumers that need rows *verified* gone still verify (MangoSyncKit
+`SyncReset` step 4 counts rows after this call) — the patch makes failure visible; it cannot make
+the clear atomic with the metadata erase.
+
+⚠️ **Consumer note.** `SyncEngineDelegate`'s documented example (`SyncEngineDelegate.swift:55-62`)
+calls this from an alert button as `Task { try await syncEngine.deleteLocalData() }` — which
+discards precisely the throw this patch exists to surface. That file is untouched upstream text and
+stays that way (divergence costs a rebase conflict for no behavior gain), so the correction lives
+here: a consumer writing its own delegate must **handle the error**, not fire-and-forget it.
+
+Dropping the *inner* wrapper has a second consequence worth stating: upstream could **commit a
+partial clear** (table A's `DELETE` fails and is swallowed, B and C are emptied,
+`setUpSyncEngine(writableDB:)` succeeds → the transaction commits with A alone intact). The patch
+makes that impossible — any table's failure aborts the write and rolls back every delete. Failure
+now always leaves the database *whole*, which is the better position to retry or report from.
+
+Known limitation (an upstream defect the patch doesn't cause but newly makes reachable):
+
+- **A failed clear cannot be retried in-process.** `tearDownSyncEngine()` drops its triggers with a
+  bare `drop()` (no `IF EXISTS`, `SyncEngine.swift:994`), and nothing re-creates them until a fresh
+  `SyncEngine.init` — `start()` doesn't, and the only other `setUpSyncEngine` call is the one inside
+  the write that just rolled back. A second `deleteLocalData()` therefore throws
+  `no such trigger: sqlitedata_icloud_after_primary_key_change_on_…` out of *teardown*, before it
+  ever reaches the clearing write, masking the original cause. Recovery is an app relaunch, not a
+  retry. Under upstream this was unreachable in practice because the first failure was silent and
+  nobody retried; patch 5 is what puts a caller in a position to try again. Verified by
+  reproduction 2026-07-25 (sabotage → throw → un-sabotage → second call throws `no such trigger`,
+  rows still present). A one-line `drop(ifExists: true)` would fix it — deliberately left as future
+  work rather than widening this patch.
+
+- **`DeleteLocalDataFailureTests`** — pins the patched contract: `failedClearThrows` (sabotaged
+  table → the call throws; rows survive the rollback; metadatabase already erased; engine left
+  stopped) + `directCallClearsAndRestarts` (the happy path called directly — prior coverage only
+  reached this method through the sign-out handler). Reverting the patch sends `failedClearThrows`
+  red (verified 2026-07-25, on the `thrownError != nil` assertion).
+
+### Test commits — patch 3 (no library behavior change)
 
 - **`PendingRecordMetadataDecodeTests`** — the tripwire for patch 3. Exercises the send path's
   metadata read for a record awaiting its first upload (root and child, at a realistic wall-clock
@@ -117,7 +172,7 @@ arguably wrong").
   resolution, which is precisely why the outage reached the field: the tests and the consuming app
   were in different dependency worlds. To re-check, point `Package.resolved` at 0.33.1 and re-run.
 
-### 6. Test commits — patches 1–2 (no library behavior change)
+### Test commits — patches 1–2 (no library behavior change)
 
 - **`ReferenceViolationGuardTests`** — pins patch 1 by injecting the failed save directly into
   `handleSentRecordZoneChanges` with the parent still present locally, so SQLite's own
@@ -191,14 +246,21 @@ nothing newer to move to.
    `git fetch upstream --tags`.
 2. Cut `mango/patches-1.X` from tag `1.X.Y`.
 3. Cherry-pick, in order: patch 1 (park guard), patch 2 (dropped-save reporting), patch 3
-   (the `swift-structured-queries` bound in `Package.swift`), the test commits (take them from
-   the tip of the previous `mango/patches-*` branch). Resolve conflicts by **idiom, not line
-   number** — the `SyncEngine` error-handling region drifts. Patch 3 conflicts every time, because
-   the rebase re-inherits upstream's `from:` declaration — take **ours**.
-4. **Vacuity guard (required):** `git revert --no-commit <patch-1 sha>` →
-   `swift test --filter ReferenceViolationGuardTests` must go **red** on
-   `cascadeChild_isParkedAndReEnqueued_notDeleted` (all three assertions); `git reset --hard`
-   → green. A rebase that skips this can silently drop the guard.
+   (the `swift-structured-queries` bound in `Package.swift`), **patch 5 (the throwing
+   `deleteLocalData()` clear)**, the test commits (take them from the tip of the previous
+   `mango/patches-*` branch). Resolve conflicts by **idiom, not line number** — the `SyncEngine`
+   error-handling region drifts. Patch 3 conflicts every time, because the rebase re-inherits
+   upstream's `from:` declaration — take **ours**. Patches 1 and 5 both live in `SyncEngine`'s
+   error-handling region and are the likeliest to need re-application by idiom.
+4. **Vacuity guard (required), once per behavior patch:**
+   - `git revert --no-commit <patch-1 sha>` → `swift test --filter ReferenceViolationGuardTests`
+     must go **red** on `cascadeChild_isParkedAndReEnqueued_notDeleted` (all three assertions);
+     `git reset --hard` → green.
+   - `git revert --no-commit <patch-5 sha>` → `swift test --filter DeleteLocalDataFailureTests`
+     must go **red** on `failedClearThrows` (the `thrownError != nil` assertion); `git reset --hard`
+     → green.
+
+   A rebase that skips these can silently drop a guard.
 5. **Manifest check (required):** confirm `Package.swift` still carries an `.upToNextMinor`
    bound for `swift-structured-queries` matching the base tag's own `Package.resolved` pin
    (currently `.upToNextMinor(from: "0.33.2")` on `mango/patches-1.7`) — the new upstream tag's
