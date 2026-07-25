@@ -216,6 +216,29 @@ Known limitations (accepted):
   Reverting the patch sends the three retry tests red and leaves the three boundary tests green
   (verified 2026-07-25).
 
+### Characterization — what a "waiting to upload" count derived from `lastKnownServerRecord` cannot see
+
+*MontiSprout Phase 41.2a — no library change; a pinned fact consumers build on.*
+
+Every consumer number for "how much is waiting to upload" is derived from the metadata's server record —
+MontiSprout's sync doctor counts `lastKnownServerRecord IS NULL AND _isDeleted = 0`, MangoSyncKit's
+`UploadTruth.unconfirmed` derives from `hasLastKnownServerRecord`. Both therefore measure **"has this row ever
+reached the server"**, not "are this row's current bytes on the server", and the gap between those two is a
+real state: an **update to an already-synced row**. The local write trigger bumps `userModificationTime` and
+leaves `lastKnownServerRecord` holding the *previous* server version (`Triggers.swift:234`), so an update whose
+save never lands leaves every such count reading **0** while the edit is genuinely unsent.
+
+The discriminator that *does* see it — for whoever implements that probe — is the metadata's
+`userModificationTime` versus the server record's own. A successful save stamps the server record from the
+metadata (`SyncEngine.swift:2052`) and the ack takes the max (`SyncMetadata.swift:2552`), so the two are equal
+after a round trip and diverge exactly while an edit is unsent. It must be read from
+**`_lastKnownServerRecordAllFields`**: `userModificationTime` lives in `encryptedValues`, which
+`lastKnownServerRecord`'s system-fields archive does not carry.
+
+- **`UnsentUpdateVisibilityTests`** — one test, asserting both halves: after a round trip the times agree and
+  the count is 0; after a local edit with no sync round the count is **still** 0, the local time has moved past
+  the server's, and the engine's own pending set does hold the save.
+
 ### Test commits — patch 3 (no library behavior change)
 
 - **`PendingRecordMetadataDecodeTests`** — the tripwire for patch 3. Exercises the send path's
