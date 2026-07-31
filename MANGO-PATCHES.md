@@ -28,7 +28,7 @@ upstream behavior.
 Deliberate consequence (owner call, 2026-07-11): on a parent that is *permanently* gone, the
 child is **kept** as a local orphan rather than silently deleted — data over orphan-avoidance.
 
-Known limitations (accepted; observability planned in the consumer's MangoSyncKit work):
+Known limitations (accepted; observability planned in the consumer's MangoSync work):
 
 - **Unbounded re-send on a permanently-gone parent.** The park re-enqueues the child's save on
   every failure, so a child whose parent never lands re-sends and re-fails each sync round
@@ -126,7 +126,7 @@ The patch: both `withErrorReporting` wrappers removed — the write's failure **
 `deleteLocalData()`. On failure the engine deliberately stays stopped: the rollback removed the
 sync triggers, so a running engine would silently track nothing. The library's own account-change
 call site already wraps this call in `withErrorReporting`, so the automatic sign-out path keeps
-upstream's report-only behavior. Consumers that need rows *verified* gone still verify (MangoSyncKit
+upstream's report-only behavior. Consumers that need rows *verified* gone still verify (MangoSync
 `SyncReset` step 4 counts rows after this call) — the patch makes failure visible; it cannot make
 the clear atomic with the metadata erase.
 
@@ -264,7 +264,7 @@ fails), and re-record inline snapshots after a rebase — the column appears in 
 *MontiSprout Phase 41.2a — no library change; a pinned fact consumers build on.*
 
 Every consumer number for "how much is waiting to upload" is derived from the metadata's server record —
-MontiSprout's sync doctor counts `lastKnownServerRecord IS NULL AND _isDeleted = 0`, MangoSyncKit's
+MontiSprout's sync doctor counts `lastKnownServerRecord IS NULL AND _isDeleted = 0`, MangoSync's
 `UploadTruth.unconfirmed` derives from `hasLastKnownServerRecord`. Both therefore measure **"has this row ever
 reached the server"**, not "are this row's current bytes on the server", and the gap between those two is a
 real state: an **update to an already-synced row**. The local write trigger bumps `userModificationTime` and
@@ -362,7 +362,7 @@ nothing newer to move to.
   revision: "<sha>")`) — never by branch or version range.
 - **All Mango apps pin the *same* revision AND the same URL string** (the SSH form above). SPM
   unifies dependencies by package identity — if two `Package.swift`s in one graph (e.g. an app +
-  MangoSyncKit) pin mismatched revisions *or* different URL forms (https vs SSH), resolution
+  MangoSync) pin mismatched revisions *or* different URL forms (https vs SSH), resolution
   fails. Bump in lockstep, always.
 
 ## Rebase procedure (new upstream release `1.X.Y`)
