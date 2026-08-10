@@ -66,10 +66,10 @@ let package = Package(
     // `Expected column 14 ("userModificationTime") to not be NULL`, and the call site cannot tell that
     // failure from "record deleted", so it REMOVES the pending change. Every record is silently dropped
     // from the upload queue: outbound sync dies completely, unrecoverably, with no user-visible error.
-    // That shipped: MontiSprout TestFlight 1.0(12) uploaded nothing for six days across two testers'
+    // That shipped: MonteSprout TestFlight 1.0(12) uploaded nothing for six days across two testers'
     // devices — the suite ran against the pinned minor while consumers resolved a newer one. See
     // `PendingRecordMetadataDecodeTests` (the tripwire; it fails with the exact production error on a
-    // base/dep mismatch). Full forensics: MontiSprout
+    // base/dep mismatch). Full forensics: MonteSprout
     // `docs/incidents/2026-07-18-metadata-decode-blocks-all-uploads.md`.
     //
     // `.upToNextMinor` because swift-structured-queries is pre-1.0, where minor bumps are breaking by

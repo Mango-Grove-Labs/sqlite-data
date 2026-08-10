@@ -592,7 +592,7 @@
             Tag(title: "tag")
           }
         }
-        // MontiSprout fork (27.4d): pushing the locally-created tag now conflicts with the identical
+        // MonteSprout fork (27.4d): pushing the locally-created tag now conflicts with the identical
         // remote tag, and CloudKit rejects it with `.serverRejectedRequest`. The fork reports every
         // silently-dropped failed save with its CKError (so the app can name it in Sentry), which
         // surfaces here as a recorded issue. It is expected — the records still reconcile below.

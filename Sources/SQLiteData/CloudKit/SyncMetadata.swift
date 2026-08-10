@@ -109,7 +109,7 @@
     public let userModificationTime: Int64
 
     /// The `userModificationTime` carried by the last known **server** record, mirrored out of the
-    /// archive so SQL can read it (MontiSprout fork, patch 7).
+    /// archive so SQL can read it (MonteSprout fork, patch 7).
     ///
     /// `nil` when the record has never reached the server. Equal to ``userModificationTime`` right after
     /// a successful round trip, and **less than** it exactly while a local edit is unsent — the one

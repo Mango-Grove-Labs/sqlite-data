@@ -138,7 +138,7 @@
       )
       .execute(db)
     }
-    // MontiSprout fork (41.2b, PATCH 7): mirror the server record's own `userModificationTime` into a
+    // MonteSprout fork (41.2b, PATCH 7): mirror the server record's own `userModificationTime` into a
     // plain column. Every consumer number for "waiting to upload" is derived from
     // `lastKnownServerRecord`, so it measures "has this row ever reached the server" and is structurally
     // blind to an **update to an already-synced row** — the row keeps its (older) server record, so the

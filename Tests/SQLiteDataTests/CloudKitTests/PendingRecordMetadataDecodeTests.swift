@@ -7,7 +7,7 @@
   import Testing
   import TestLocals
 
-  // MontiSprout incident 2026-07-18 — REGRESSION TEST for a dependency-version defect.
+  // MonteSprout incident 2026-07-18 — REGRESSION TEST for a dependency-version defect.
   //
   // **Root cause (confirmed):** this package is written and tested against
   // **swift-structured-queries 0.31.1** (see `Package.resolved`), but upstream declared the dependency
@@ -25,7 +25,7 @@
   // :1132-1148) cannot distinguish "this record is gone" from "I failed to read it" — either way it runs
   // `state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])`. The record leaves the upload queue,
   // never gets a server record, keeps the same shape, and fails identically forever. Outbound sync dies
-  // silently: MontiSprout TestFlight 1.0(12) uploaded **nothing** for six days across two testers' devices
+  // silently: MonteSprout TestFlight 1.0(12) uploaded **nothing** for six days across two testers' devices
   // (Sentry 7607055566), and the app's own sync health reported "ok" throughout.
   //
   // **Why nothing caught it:** this suite runs against the pinned 0.31.1 while consumers ran 0.33.1 — two
@@ -37,7 +37,7 @@
   // upgrading the fork. To verify by hand, temporarily point `Package.resolved` at 0.33.1 and re-run — all
   // four fail.
   //
-  // Full forensics: MontiSprout `docs/incidents/2026-07-18-metadata-decode-blocks-all-uploads.md`.
+  // Full forensics: MonteSprout `docs/incidents/2026-07-18-metadata-decode-blocks-all-uploads.md`.
 
   extension BaseCloudKitTests {
     @MainActor

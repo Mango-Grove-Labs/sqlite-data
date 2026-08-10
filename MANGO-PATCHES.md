@@ -14,13 +14,13 @@ stay valid. Rebased 2026-07-25; only patch 3 conflicted, retargeted per the proc
 
 ### 1. Park + re-enqueue CASCADE child on `.referenceViolation` save (never local-delete)
 
-*MontiSprout Phase 27.6c — the data-loss fix.*
+*MonteSprout Phase 27.6c — the data-loss fix.*
 
 A CASCADE parent-reference violation on a **save** means the child's parent hasn't landed in
 the CloudKit zone *yet* — not that the child should be destroyed. Upstream's failed-save
 handler (`SyncEngine.handleSentRecordZoneChanges`, `.referenceViolation` → `onDelete == .cascade`
 branch) local-DELETEs the child, which surfaces as user rows that appear and then vanish (a
-local-first data-loss bug; hit in the field by MontiSprout testers). The patch mirrors the
+local-first data-loss bug; hit in the field by MonteSprout testers). The patch mirrors the
 library's own failed-**delete** idiom instead: park the row in `UnsyncedRecordID` and re-enqueue
 its `.saveRecord` so it lands once the parent syncs. `setNull`/`setDefault` FK actions keep
 upstream behavior.
@@ -43,24 +43,24 @@ Known limitations (accepted; observability planned in the consumer's MangoSync w
 
 ### 2. Report every silently-dropped failed SAVE with its CKError
 
-*MontiSprout Phase 27.4d — observability for the invisible failure.*
+*MonteSprout Phase 27.4d — observability for the invisible failure.*
 
 Upstream abandons several failed-save buckets (`.serverRejectedRequest`, the terminal bucket:
 `.badDatabase`/`.quotaExceeded`/…, and `@unknown default`) with no retry **and no signal** — a
 record failing there simply never reaches CloudKit, invisibly. The patch adds a
 `reportIssue(...)` naming the record type and CKError code on every such drop (diagnostic only —
 control flow unchanged, no per-code special-casing). Hosts bridge IssueReporting to their
-telemetry (MontiSprout: IssueReporting→Sentry) so the field failure gets a name.
+telemetry (MonteSprout: IssueReporting→Sentry) so the field failure gets a name.
 
 Known noise: benign duplicate-record conflicts can be reported; triage before reacting.
 
 ### 3. Bound the `swift-structured-queries` range (the 1.0(12) sync outage)
 
-*MontiSprout incident 2026-07-18 — total, silent loss of outbound sync in a shipped build.*
+*MonteSprout incident 2026-07-18 — total, silent loss of outbound sync in a shipped build.*
 
 Upstream declares `swift-structured-queries` as `from: "0.31.0"` — **unbounded**. Tag 1.6.6 is
 written and tested against **0.31.1** (its own `Package.resolved` pins exactly that), but a
-consumer's SPM graph happily resolves whatever is newest. MontiSprout resolved **0.33.1**, at
+consumer's SPM graph happily resolves whatever is newest. MonteSprout resolved **0.33.1**, at
 which point `SyncMetadata`'s generated column decoding misaligns: the send path fails reading
 every pending record's own metadata row with a bogus
 `Expected column 14 ("userModificationTime") to not be NULL` (the column is `INTEGER NOT NULL`
@@ -70,7 +70,7 @@ wherever the decoder gave up, so the named column is an artefact of the misalign
 The failure is catastrophic rather than noisy because `nextRecordZoneChangeBatch` cannot
 distinguish "record is gone" from "I failed to read it" and runs
 `state.remove(pendingRecordZoneChanges:)` either way — dropping the record from the upload queue
-permanently. **MontiSprout TestFlight 1.0(12) uploaded nothing for six days across two testers'
+permanently. **MonteSprout TestFlight 1.0(12) uploaded nothing for six days across two testers'
 devices** while the app's sync health reported "ok".
 
 The patch: bound the range to the minor the base tag is tested against. On the 1.6.6 base that
@@ -88,12 +88,12 @@ same thing to a consumer. Treat a widened range as a library change requiring th
 `from:` with no ceiling, and this repo's own `Package.resolved` shows how far they drift —
 **GRDB is declared `from: "7.6.0"` and resolves to 7.11.0**, the largest gap in the manifest and
 the one sitting closest to the storage layer. Nothing has gone wrong there; the point is that
-nothing would tell us if it did. (Tracked as item 8 of the MontiSprout incident, but the work
+nothing would tell us if it did. (Tracked as item 8 of the MonteSprout incident, but the work
 happens in this repo.)
 
 ### 4. A failed `CKAsset` download must be parked for retry, never written as `NULL`
 
-*MontiSprout, observed 2026-07-19 (Sentry 7619718981); mechanism traced Phase 45.4; implemented
+*MonteSprout, observed 2026-07-19 (Sentry 7619718981); mechanism traced Phase 45.4; implemented
 2026-08-10 on `mango/patches-1.9`.*
 
 On the fetch path, upstream's `upsert` builder maps a record's unloadable `CKAsset` (`fileURL`
@@ -132,7 +132,7 @@ if the backfill path ever shows the same husk.
 
 Trigger context: observed on a device that had just crossed CloudKit Development→Production, so
 the field trigger may be stale cross-environment asset references rather than a plain download
-failure. The consumer carries the fleet-truth instrument either way (MontiSprout 45.4): the data
+failure. The consumer carries the fleet-truth instrument either way (MonteSprout 45.4): the data
 doctor's `mediaMissingBlobBytes` counts live items older than 24 h with no blob row, so a real
 husk anywhere in the fleet surfaces in its `sync.heal` breadcrumb/summary.
 
@@ -142,12 +142,12 @@ so an end-to-end test can never present an unloadable asset — exactly the well
 masked the bug), asserts park-not-husk on first delivery, old-bytes-survive on update, and
 land-and-clear on the loadable re-delivery.
 
-Full context: MontiSprout `docs/incidents/2026-07-18-metadata-decode-blocks-all-uploads.md`
+Full context: MonteSprout `docs/incidents/2026-07-18-metadata-decode-blocks-all-uploads.md`
 § Addendum + its `docs/DECISIONS.md` § "2026-08-10 — Phase 45.4".
 
 ### 5. A failed local clear in `deleteLocalData()` must throw, never report-and-continue
 
-*MontiSprout incident 2026-07-20 (`resetfresh-left-local-data-cross-env`) — the false-success reset.*
+*MonteSprout incident 2026-07-20 (`resetfresh-left-local-data-cross-env`) — the false-success reset.*
 
 Upstream's `deleteLocalData()` wraps its row-clearing write in `withErrorReporting` (and each
 per-table `DELETE` in its own inner `withErrorReporting`), so every failure is swallowed into a
@@ -155,7 +155,7 @@ reported issue and the method returns as if it succeeded. The write's final stat
 `setUpSyncEngine(writableDB:)` — a throw there **rolls back the entire transaction**, undoing every
 delete, while the metadatabase erase in `tearDownSyncEngine()` (a prior, non-transactional step)
 stands. One swallowed failure therefore produces: clean return, sync metadata gone, **every user
-row still present** — and a caller that treats "didn't throw" as "cleared" (MontiSprout's
+row still present** — and a caller that treats "didn't throw" as "cleared" (MonteSprout's
 `resetFresh`) renders a false-success report over it. Hit in the field 2026-07-20 (intermittent —
 the 2026-07-25 forensic re-run on the same device cleared correctly); mechanism proven in-process
 by `DeleteLocalDataFailureTests`.
@@ -202,13 +202,13 @@ Known limitation (an upstream defect the patch doesn't cause but newly makes rea
 
 ### 6. An account-availability transition must park the change for retry, never drop it
 
-*MontiSprout Phase 41.1 — the upload that never resumes.*
+*MonteSprout Phase 41.1 — the upload that never resumes.*
 
 Upstream's failed-**save** handler puts `.notAuthenticated` and `.accountTemporarilyUnavailable` in the
 terminal "give up silently" bucket (patch 2's bucket), and the failed-**delete** switch abandons them
 the same way. So a change that is in flight when iCloud signs out, signs in, or has its per-app toggle
 flipped is removed from the queue permanently: the send never happens, and nothing resumes it until an
-app relaunch re-enqueues from the metadata ledger. Observed on hardware during MontiSprout's 1.0(15)
+app relaunch re-enqueues from the metadata ledger. Observed on hardware during MonteSprout's 1.0(15)
 device matrix (2026-07-25, Sentry 7633019003): a per-app-toggle window dropped a send, the app's
 "Not syncing to iCloud right now" health line lingered past restoration, and the record only landed
 after a relaunch.
@@ -245,7 +245,7 @@ Known limitations (accepted):
   in CKSyncEngine's state, so a process death before its next serialization loses the retry and the
   row waits for a relaunch (i.e. it degrades to today's behavior, never worse).
 - **Neither half fixes the host's health signal.** The lingering "not syncing" line is a consumer
-  concern (MontiSprout 41.1b), not something the library can clear.
+  concern (MonteSprout 41.1b), not something the library can clear.
 
 - **`AuthTransitionRetryTests`** — pins the patched contract by injecting failures directly into
   `handleSentRecordZoneChanges` (the `DroppedSaveReportingTests` idiom): both transition codes
@@ -256,7 +256,7 @@ Known limitations (accepted):
 
 ### 7. Mirror the server record's `userModificationTime` into a column
 
-*MontiSprout Phase 41.2b — make an unsent **edit** countable.*
+*MonteSprout Phase 41.2b — make an unsent **edit** countable.*
 
 The characterization below proves the blind spot: every consumer count for "waiting to upload" is derived
 from `lastKnownServerRecord`, so an **update to an already-synced row** reads as confirmed while its save is
@@ -310,7 +310,7 @@ error — the record left the queue permanently and no retry ever touched it aga
 Patch 3 removes the trigger that was actually hit. It does nothing about the amplifier: any future
 read failure — a schema change, a corrupt row, a lock timeout — reproduces the same outage shape.
 The fix should follow patch 1's idiom: a read failure **parks or retries**, and only a genuinely
-absent record is dropped. Worth doing regardless of root cause (MontiSprout incident, "the guard is
+absent record is dropped. Worth doing regardless of root cause (MonteSprout incident, "the guard is
 arguably wrong").
 
 (Numbering note: this item briefly shared the number 4 with the asset-park patch while both were
@@ -318,10 +318,10 @@ unwritten; the asset patch kept 4 on implementation, this one moved to 8.)
 
 ### Characterization — what a "waiting to upload" count derived from `lastKnownServerRecord` cannot see
 
-*MontiSprout Phase 41.2a — no library change; a pinned fact consumers build on.*
+*MonteSprout Phase 41.2a — no library change; a pinned fact consumers build on.*
 
 Every consumer number for "how much is waiting to upload" is derived from the metadata's server record —
-MontiSprout's sync doctor counts `lastKnownServerRecord IS NULL AND _isDeleted = 0`, MangoSync's
+MonteSprout's sync doctor counts `lastKnownServerRecord IS NULL AND _isDeleted = 0`, MangoSync's
 `UploadTruth.unconfirmed` derives from `hasLastKnownServerRecord`. Both therefore measure **"has this row ever
 reached the server"**, not "are this row's current bytes on the server", and the gap between those two is a
 real state: an **update to an already-synced row**. The local write trigger bumps `userModificationTime` and
