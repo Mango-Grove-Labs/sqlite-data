@@ -4,7 +4,7 @@
   import SQLiteData
   import Testing
 
-  // MontiSprout fork (45.4 / patch 4): a fetched record whose `CKAsset` cannot be loaded must be
+  // MonteSprout fork (45.4 / patch 4): a fetched record whose `CKAsset` cannot be loaded must be
   // PARKED for retry, never written as a literal `NULL`. Upstream maps the failed load to `NULL`:
   // on a `NOT NULL` bytes column the insert fails and the record is dropped from the fetch with the
   // change token advanced — a permanent local husk that is never re-delivered (Sentry 7619718981);

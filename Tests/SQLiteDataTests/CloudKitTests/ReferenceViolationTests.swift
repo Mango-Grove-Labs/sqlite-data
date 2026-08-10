@@ -42,7 +42,7 @@
         try await syncEngine.processPendingRecordZoneChanges(scope: .private)
 
         try await userDatabase.read { db in
-          // MontiSprout fork (27.6c): the reminder is KEPT, not local-deleted — its rejected save is
+          // MonteSprout fork (27.6c): the reminder is KEPT, not local-deleted — its rejected save is
           // parked and re-enqueued rather than dropped. Its move to the now-deleted list 2 does not
           // survive the conflict; it lands back on list 1 (the row is preserved even though that
           // edit is not). Upstream deleted the reminder here (`fetchCount == 0`).

@@ -5,9 +5,9 @@
   import SQLiteData
   import Testing
 
-  // MontiSprout Phase 41.2a — why "pending = 0" can be honest and still hide unsent data.
+  // MonteSprout Phase 41.2a — why "pending = 0" can be honest and still hide unsent data.
   //
-  // Consumers derive their "waiting to upload" number from the metadata's server record: MontiSprout's sync
+  // Consumers derive their "waiting to upload" number from the metadata's server record: MonteSprout's sync
   // doctor counts `lastKnownServerRecord IS NULL AND _isDeleted = 0`, and MangoSync's `UploadTruth` derives
   // `unconfirmed` from the same fact via `hasLastKnownServerRecord`. Both therefore measure **"has this row
   // EVER reached the server"** — not "are this row's current bytes on the server".
@@ -28,7 +28,7 @@
   extension BaseCloudKitTests {
     @MainActor
     final class UnsentUpdateVisibilityTests: BaseCloudKitTests, @unchecked Sendable {
-      /// Mirrors MontiSprout's sync-doctor query verbatim — the number that read 0 on the device.
+      /// Mirrors MonteSprout's sync-doctor query verbatim — the number that read 0 on the device.
       @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
       private func recordsAwaitingUpload() async throws -> Int {
         try await syncEngine.metadatabase.read { db in

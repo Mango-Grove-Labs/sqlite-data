@@ -780,7 +780,7 @@
       // `setUpSyncEngine(writableDB:)`, whose throw rolls back the WHOLE transaction — every
       // delete undone — while `tearDownSyncEngine()`'s metadatabase erase (a prior,
       // non-transactional step) stands. Field shape: a "successful" reset that erased the sync
-      // metadata and left every user row in place (MontiSprout incident
+      // metadata and left every user row in place (MonteSprout incident
       // `2026-07-20-resetfresh-left-local-data-cross-env`; repro: `DeleteLocalDataFailureTests`).
       //
       // The engine is deliberately NOT restarted on failure: after the rollback the sync triggers
@@ -1705,7 +1705,7 @@
           }
         }
 
-        // MontiSprout fork (27.4d): the library abandons several failed *save* buckets with no retry
+        // MonteSprout fork (27.4d): the library abandons several failed *save* buckets with no retry
         // and no signal — a record that fails in one of them simply never reaches CloudKit, invisibly
         // (the field "the classroom never lands on her account" failure). Surface every such dropped
         // save to the issue reporter with its CKError, so the app's IssueReporting→Sentry bridge
@@ -1722,7 +1722,7 @@
           )
         }
 
-        // MontiSprout fork (41.1): the parked-for-retry twin of the report above. Deliberately
+        // MonteSprout fork (41.1): the parked-for-retry twin of the report above. Deliberately
         // WORDED DIFFERENTLY so a host's telemetry can tell "this record was abandoned" from "this
         // record will be retried" — the two demand opposite responses from whoever reads the event.
         func reportParkedSave() {
@@ -1764,7 +1764,7 @@
           else {
             continue
           }
-          // MontiSprout fork (27.6c): a CASCADE parent-reference violation on a *save* means the
+          // MonteSprout fork (27.6c): a CASCADE parent-reference violation on a *save* means the
           // child's parent hasn't landed in the zone YET — not that the child should be destroyed.
           // Upstream local-DELETEs the child here, which surfaces as user rows that appear and then
           // vanish (a local-first data-loss bug). Instead, mirror the failed-*delete* handler below:
@@ -1788,7 +1788,7 @@
               try $_isSynchronizingChanges.withValue(false) {
                 switch foreignKey.onDelete {
                 case .cascade:
-                  // MontiSprout fork (27.6c): handled above (parked + re-enqueued, never deleted).
+                  // MonteSprout fork (27.6c): handled above (parked + re-enqueued, never deleted).
                   break
                 case .restrict:
                   preconditionFailure(
@@ -1861,11 +1861,11 @@
           newPendingRecordZoneChanges.append(.saveRecord(failedRecord.recordID))
           break
 
-        // MontiSprout fork (41.1): an account-availability transition is not a verdict on the
+        // MonteSprout fork (41.1): an account-availability transition is not a verdict on the
         // record. Upstream drops these saves into the terminal bucket below — no retry — so a send
         // that lands inside an iCloud sign-in/sign-out or per-app-toggle window leaves the row
         // permanently unsent, and nothing resumes it until an app relaunch re-enqueues from the
-        // ledger (observed on hardware 2026-07-25, MontiSprout 1.0(15) matrix, Sentry 7633019003).
+        // ledger (observed on hardware 2026-07-25, MonteSprout 1.0(15) matrix, Sentry 7633019003).
         // Re-enqueue the save instead, patch-1 style: CKSyncEngine holds the pending change while
         // the account is unavailable and sends it once availability returns.
         //
@@ -1915,7 +1915,7 @@
               case .batchRequestFailed:
                 syncEngine.state.add(pendingRecordZoneChanges: [.deleteRecord(failedRecordID)])
                 break
-              // MontiSprout fork (41.1): the failed-DELETE half of the same fix. A delete abandoned
+              // MonteSprout fork (41.1): the failed-DELETE half of the same fix. A delete abandoned
               // inside an account transition leaves the record alive in the zone, so the next fetch
               // resurrects the row the teacher deleted — the same "a transition is not a verdict"
               // shape as the save side above. Re-enqueue rather than drop; the transition codes only.
@@ -2567,7 +2567,7 @@
       self.ownerName = lastKnownServerRecord?.recordID.zoneID.ownerName ?? self.ownerName
       self.lastKnownServerRecord = #bind(lastKnownServerRecord)
       self._lastKnownServerRecordAllFields = #bind(lastKnownServerRecord)
-      // MontiSprout fork (41.2b, patch 7): mirror the server record's own stamp beside the archive.
+      // MonteSprout fork (41.2b, patch 7): mirror the server record's own stamp beside the archive.
       // Every write of `lastKnownServerRecord` funnels through here, so the mirror cannot drift from what
       // it describes — including the clearing case, where a nil record must nil the mirror rather than
       // leave a time that would read as "in sync" with a server copy that no longer exists.

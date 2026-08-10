@@ -3,7 +3,7 @@
   import SQLiteData
   import Testing
 
-  // MontiSprout fork (27.4d): the failed-*save* handler abandons several CKError buckets with no retry
+  // MonteSprout fork (27.4d): the failed-*save* handler abandons several CKError buckets with no retry
   // and no signal (a record that fails there never reaches CloudKit, invisibly). The fork now
   // `reportIssue`s every such dropped save with its CKError so the host's IssueReporting→Sentry bridge
   // can NAME the otherwise-unnamed error. These tests inject a failed save directly into

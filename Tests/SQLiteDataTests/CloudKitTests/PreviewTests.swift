@@ -9,7 +9,7 @@
     @MainActor
     @Suite(.dependencies { $0.context = .preview })
     final class PreviewTests: BaseCloudKitTests, @unchecked Sendable {
-      // MontiSprout fork (32.2 test repair): the preview auto-sync timer registers its
+      // MonteSprout fork (32.2 test repair): the preview auto-sync timer registers its
       // `clock.sleep` on a detached task (`SyncEngine.previewTimerTask`) and runs a full
       // `syncChanges()` (send + fetch) after each tick, so a single fixed `testClock.advance`
       // races BOTH the registration and the in-flight round — an unfinished `fetchChanges` can

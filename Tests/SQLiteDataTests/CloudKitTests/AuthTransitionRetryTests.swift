@@ -4,12 +4,12 @@
   import SQLiteData
   import Testing
 
-  // MontiSprout fork (41.1): an account-availability transition is not a verdict on the record.
+  // MonteSprout fork (41.1): an account-availability transition is not a verdict on the record.
   // Upstream drops `.notAuthenticated` / `.accountTemporarilyUnavailable` failures into the terminal
   // "give up silently" bucket on BOTH the failed-save and failed-delete paths, so a change that is in
   // flight when iCloud signs out, signs in, or has its per-app toggle flipped never reaches the zone
   // — and nothing resumes it until an app relaunch re-enqueues from the ledger (observed on hardware
-  // 2026-07-25 during the MontiSprout 1.0(15) device matrix; Sentry 7633019003). The fork re-enqueues
+  // 2026-07-25 during the MonteSprout 1.0(15) device matrix; Sentry 7633019003). The fork re-enqueues
   // the change instead, so CKSyncEngine holds it while the account is unavailable and sends it when
   // availability returns.
   //

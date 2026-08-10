@@ -4,7 +4,7 @@
   import SQLiteData
   import Testing
 
-  // MANGO PATCH 5 — the resetFresh false-success. MontiSprout
+  // MANGO PATCH 5 — the resetFresh false-success. MonteSprout
   // `docs/incidents/2026-07-20-resetfresh-left-local-data-cross-env.md`: on-device, a full reset
   // reported success, erased the sync metadata and re-created the zone — and left EVERY local row
   // in place with its pre-reset `updatedAt`.
