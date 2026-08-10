@@ -329,13 +329,42 @@ decision" shape as patch 1.
 **Proposed:** when an expected asset is nil, skip the row and leave it unsynced (or park it, patch-1 style)
 so the next fetch retries, rather than attempting an insert that cannot succeed.
 
+**Mechanism traced (MontiSprout Phase 45.4, 2026-08-10).** Both query builders emit the NULL themselves:
+`updateQuery` (SyncEngine.swift ~2152/2169) and `upsert` (~2588) map an unloadable asset
+(`asset.fileURL` nil, or `dataManager.load` throwing on CloudKit's *temporary* asset file) to a literal
+`"NULL"`. Only `updateQuery` pairs the emit with a `reportIssue("Asset data not found on disk")`;
+`upsert` — the builder actually on the fetched-record path — emits it **silently**, so the husk's single
+Sentry line is the rethrown NOT NULL `DatabaseError` caught by `withErrorReporting`, not an asset-load
+report. Three sharpenings for the patch:
+
+- **The apply is per-record** (each record's upsert runs inside its own `withErrorReporting` within the
+  shared batch write), so there is no batch poisoning — but the catch (~2082) parks **only**
+  `SQLITE_CONSTRAINT_FOREIGNKEY` into `UnsyncedRecordID`. A NOT NULL failure rethrows into the reporter
+  and the record is gone: the change token advances, and a bytes-column record (written once, never
+  edited) is **never re-delivered**. Permanent local husk, one Sentry line.
+- **The consumer's NOT NULL constraint is load-bearing, not the bug.** On the conflict-UPDATE path a
+  missing asset emits `"data" = "excluded"."data"` — i.e. the NULL from VALUES — so without the
+  constraint a transient asset failure would **overwrite existing good bytes with NULL**. Any fix must
+  keep that property; "make the column nullable" converts an error into silent data destruction — and
+  with `upsert`'s emit being silent (above), destruction with **zero** telemetry.
+- **`UnsyncedRecordID` is the right park:** parked ids are re-fetched in batches via
+  `database.records(for:)` (~1586), which downloads assets — so extending the ~2082 catch to
+  `SQLITE_CONSTRAINT_NOTNULL` (or better: skipping the emit when an asset column loads nil) gives
+  genuine retry semantics for a transient failure, and a permanently-missing server asset parks
+  visibly instead of vanishing.
+
 **Not yet reproduced deliberately.** Observed only on a device that had just crossed CloudKit
 Development→Production, so the trigger may be stale cross-environment asset references rather than a plain
 download failure. No data loss was observed (every `mediaItem` still had its blob on both devices) — the
 insert fails, so nothing local is overwritten. Worth reproducing with a deliberately failed asset download
-before writing the patch.
+before writing the patch. **The consumer now carries the fleet-truth instrument** (MontiSprout 45.4): the
+app's data doctor reports `mediaMissingBlobBytes` — live items older than 24 h with no blob row — so a
+real husk anywhere in the fleet surfaces in its `sync.heal` breadcrumb/summary instead of relying on this
+one Sentry issue. Write the patch when that instrument shows a husk, when testers scale, or at the next
+fork maintenance window — whichever comes first.
 
-Full context: MontiSprout `docs/incidents/2026-07-18-metadata-decode-blocks-all-uploads.md` § Addendum.
+Full context: MontiSprout `docs/incidents/2026-07-18-metadata-decode-blocks-all-uploads.md` § Addendum +
+its `docs/DECISIONS.md` § "2026-08-10 — Phase 45.4".
 
 ## Why upstream won't take patches 1–2
 
