@@ -91,21 +91,59 @@ the one sitting closest to the storage layer. Nothing has gone wrong there; the 
 nothing would tell us if it did. (Tracked as item 8 of the MontiSprout incident, but the work
 happens in this repo.)
 
-### 4. Planned — don't let a read failure masquerade as a deletion
+### 4. A failed `CKAsset` download must be parked for retry, never written as `NULL`
 
-*Not yet implemented. Recorded here so the amplifier isn't forgotten once patch 3 hides it.*
+*MontiSprout, observed 2026-07-19 (Sentry 7619718981); mechanism traced Phase 45.4; implemented
+2026-08-10 on `mango/patches-1.9`.*
 
-`nextRecordZoneChangeBatch` (SyncEngine.swift:1132-1148) treats a failed metadata read exactly
-like a missing record: both fall through to
-`state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])`. That conflation is what turned
-the 0.33.1 decode bug into six days of *silent, unrecoverable* data loss rather than a visible
-error — the record left the queue permanently and no retry ever touched it again.
+On the fetch path, upstream's `upsert` builder maps a record's unloadable `CKAsset` (`fileURL`
+nil, or `dataManager.load` throwing on CloudKit's *temporary* asset file) to a literal `"NULL"` —
+silently (only the schema-backfill builder `updateQuery` pairs its emit with a `reportIssue`).
+Where the column is `NOT NULL` — as any "the bytes themselves" column will be — SQLite rejects
+the row:
 
-Patch 3 removes the trigger that was actually hit. It does nothing about the amplifier: any future
-read failure — a schema change, a corrupt row, a lock timeout — reproduces the same outage shape.
-The fix should follow patch 1's idiom: a read failure **parks or retries**, and only a genuinely
-absent record is dropped. Worth doing regardless of root cause (MontiSprout incident, "the guard is
-arguably wrong").
+```
+SQLite error 19: NOT NULL constraint failed: mediaBlobs.data
+INSERT INTO "mediaBlobs" ("id","classroomID","data","createdAt") VALUES (?, ?, NULL, ?) ON CONFLICT…
+```
+
+The apply is per-record (each record's upsert runs inside its own `withErrorReporting` within the
+shared batch write), so nothing else in the batch is poisoned — but upstream's park catch parks
+only `SQLITE_CONSTRAINT_FOREIGNKEY`, so the NOT NULL failure rethrows into the reporter and the
+record is gone: the change token advances, and a bytes-column record (written once, never edited)
+is **never re-delivered**. A permanent local husk, one generic error report. On a *nullable*
+column the same failure is worse: the emitted NULL **overwrites existing good bytes**, with zero
+telemetry. Either way, a transient download failure becomes something the engine can't distinguish
+from a decision — the same shape as patch 1.
+
+The patch: `upsert` throws a dedicated `AssetDataNotLoadable` instead of emitting `NULL`, and the
+apply path parks the record in `UnsyncedRecordID` (patch-1 idiom) with a `reportIssue` naming the
+record type and column (patch-2 idiom). Parked ids are re-fetched in batches via
+`database.records(for:)`, which downloads assets — so a transient failure gets genuine retry
+semantics, and a permanently-missing server asset parks visibly (a report per round) instead of
+vanishing. A consumer's NOT NULL bytes column stays load-bearing as defense in depth, but
+nullability no longer decides between husk and destruction: on a failed load, no SQL is emitted at
+all.
+
+Scope note: `updateQuery` (the schema-migration backfill path) keeps upstream behavior — it
+re-downloads each asset-bearing record from the server just before building its query, so its
+failure window is far narrower, and no park machinery is in reach there. Extend it patch-4-style
+if the backfill path ever shows the same husk.
+
+Trigger context: observed on a device that had just crossed CloudKit Development→Production, so
+the field trigger may be stale cross-environment asset references rather than a plain download
+failure. The consumer carries the fleet-truth instrument either way (MontiSprout 45.4): the data
+doctor's `mediaMissingBlobBytes` counts live items older than 24 h with no blob row, so a real
+husk anywhere in the fleet surfaces in its `sync.heal` breadcrumb/summary.
+
+Guard: `FailedAssetDownloadParkTests` injects a stale record straight into
+`handleFetchedRecordZoneChanges` (the mock's fetch path re-materializes asset data on delivery,
+so an end-to-end test can never present an unloadable asset — exactly the well-behaved path that
+masked the bug), asserts park-not-husk on first delivery, old-bytes-survive on update, and
+land-and-clear on the loadable re-delivery.
+
+Full context: MontiSprout `docs/incidents/2026-07-18-metadata-decode-blocks-all-uploads.md`
+§ Addendum + its `docs/DECISIONS.md` § "2026-08-10 — Phase 45.4".
 
 ### 5. A failed local clear in `deleteLocalData()` must throw, never report-and-continue
 
@@ -259,6 +297,25 @@ fails), and re-record inline snapshots after a rebase — the column appears in 
   `.serverRejectedRequest` path. **Read via SQL, never via the archived record** — a mirror test that reads
   the thing being mirrored passes with the patch reverted (caught by the vacuity guard, 2026-07-25).
 
+### 8. Planned — don't let a read failure masquerade as a deletion
+
+*Not yet implemented. Recorded here so the amplifier isn't forgotten once patch 3 hides it.*
+
+`nextRecordZoneChangeBatch` (SyncEngine.swift:1132-1148) treats a failed metadata read exactly
+like a missing record: both fall through to
+`state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])`. That conflation is what turned
+the 0.33.1 decode bug into six days of *silent, unrecoverable* data loss rather than a visible
+error — the record left the queue permanently and no retry ever touched it again.
+
+Patch 3 removes the trigger that was actually hit. It does nothing about the amplifier: any future
+read failure — a schema change, a corrupt row, a lock timeout — reproduces the same outage shape.
+The fix should follow patch 1's idiom: a read failure **parks or retries**, and only a genuinely
+absent record is dropped. Worth doing regardless of root cause (MontiSprout incident, "the guard is
+arguably wrong").
+
+(Numbering note: this item briefly shared the number 4 with the asset-park patch while both were
+unwritten; the asset patch kept 4 on implementation, this one moved to 8.)
+
 ### Characterization — what a "waiting to upload" count derived from `lastKnownServerRecord` cannot see
 
 *MontiSprout Phase 41.2a — no library change; a pinned fact consumers build on.*
@@ -307,65 +364,6 @@ after a round trip and diverge exactly while an edit is unsent. It must be read 
   1.6.6; repaired with a bounded settle loop + `withKnownIssue(isIntermittent:)` for a residual
   mock-atomicity gap (see that commit's message for the full mechanism).
 
-## Candidate patches (not yet written)
-
-### 4. A failed `CKAsset` download must not be written as `NULL`
-
-*MontiSprout, observed 2026-07-19 (Sentry 7619718981) — **candidate, not implemented**.*
-
-On the fetch path, a record whose `CKAsset` fails to materialise yields a nil value, and the engine writes
-it straight into the local column. Where that column is `NOT NULL` — as any "the bytes themselves" column
-will be — SQLite rejects the row:
-
-```
-SQLite error 19: NOT NULL constraint failed: mediaBlobs.data
-INSERT INTO "mediaBlobs" ("id","classroomID","data","createdAt") VALUES (?, ?, NULL, ?) ON CONFLICT…
-```
-
-A transient asset-download failure therefore becomes a **constraint violation**, not a retry. The record is
-dropped from that fetch with no queued recovery — the same "a failure the engine can't distinguish from a
-decision" shape as patch 1.
-
-**Proposed:** when an expected asset is nil, skip the row and leave it unsynced (or park it, patch-1 style)
-so the next fetch retries, rather than attempting an insert that cannot succeed.
-
-**Mechanism traced (MontiSprout Phase 45.4, 2026-08-10).** Both query builders emit the NULL themselves:
-`updateQuery` (SyncEngine.swift ~2152/2169) and `upsert` (~2588) map an unloadable asset
-(`asset.fileURL` nil, or `dataManager.load` throwing on CloudKit's *temporary* asset file) to a literal
-`"NULL"`. Only `updateQuery` pairs the emit with a `reportIssue("Asset data not found on disk")`;
-`upsert` — the builder actually on the fetched-record path — emits it **silently**, so the husk's single
-Sentry line is the rethrown NOT NULL `DatabaseError` caught by `withErrorReporting`, not an asset-load
-report. Three sharpenings for the patch:
-
-- **The apply is per-record** (each record's upsert runs inside its own `withErrorReporting` within the
-  shared batch write), so there is no batch poisoning — but the catch (~2082) parks **only**
-  `SQLITE_CONSTRAINT_FOREIGNKEY` into `UnsyncedRecordID`. A NOT NULL failure rethrows into the reporter
-  and the record is gone: the change token advances, and a bytes-column record (written once, never
-  edited) is **never re-delivered**. Permanent local husk, one Sentry line.
-- **The consumer's NOT NULL constraint is load-bearing, not the bug.** On the conflict-UPDATE path a
-  missing asset emits `"data" = "excluded"."data"` — i.e. the NULL from VALUES — so without the
-  constraint a transient asset failure would **overwrite existing good bytes with NULL**. Any fix must
-  keep that property; "make the column nullable" converts an error into silent data destruction — and
-  with `upsert`'s emit being silent (above), destruction with **zero** telemetry.
-- **`UnsyncedRecordID` is the right park:** parked ids are re-fetched in batches via
-  `database.records(for:)` (~1586), which downloads assets — so extending the ~2082 catch to
-  `SQLITE_CONSTRAINT_NOTNULL` (or better: skipping the emit when an asset column loads nil) gives
-  genuine retry semantics for a transient failure, and a permanently-missing server asset parks
-  visibly instead of vanishing.
-
-**Not yet reproduced deliberately.** Observed only on a device that had just crossed CloudKit
-Development→Production, so the trigger may be stale cross-environment asset references rather than a plain
-download failure. No data loss was observed (every `mediaItem` still had its blob on both devices) — the
-insert fails, so nothing local is overwritten. Worth reproducing with a deliberately failed asset download
-before writing the patch. **The consumer now carries the fleet-truth instrument** (MontiSprout 45.4): the
-app's data doctor reports `mediaMissingBlobBytes` — live items older than 24 h with no blob row — so a
-real husk anywhere in the fleet surfaces in its `sync.heal` breadcrumb/summary instead of relying on this
-one Sentry issue. Write the patch when that instrument shows a husk, when testers scale, or at the next
-fork maintenance window — whichever comes first.
-
-Full context: MontiSprout `docs/incidents/2026-07-18-metadata-decode-blocks-all-uploads.md` § Addendum +
-its `docs/DECISIONS.md` § "2026-08-10 — Phase 45.4".
-
 ## Why upstream won't take patches 1–2
 
 Reported as [pointfreeco/sqlite-data#485](https://github.com/pointfreeco/sqlite-data/issues/485);
@@ -400,19 +398,29 @@ nothing newer to move to.
    `git fetch upstream --tags`.
 2. Cut `mango/patches-1.X` from tag `1.X.Y`.
 3. Cherry-pick, in order: patch 1 (park guard), patch 2 (dropped-save reporting), patch 3
-   (the `swift-structured-queries` bound in `Package.swift`), **patch 5 (the throwing
+   (the `swift-structured-queries` bound in `Package.swift`), **patch 4 (the asset park —
+   `upsert` throws `AssetDataNotLoadable`, the apply path parks instead of emitting `NULL`)**,
+   **patch 5 (the throwing
    `deleteLocalData()` clear)**, **patch 6 (auth-transition park-and-retry)**, **patch 7 (the mirrored
    server `userModificationTime` — schema, so keep its migration registered after upstream's)**, the test
    commits (take them from the tip of the previous `mango/patches-*` branch). Resolve conflicts by **idiom, not line
    number** — the `SyncEngine` error-handling region drifts. Patch 3 conflicts every time, because the
-   rebase re-inherits upstream's `from:` declaration — take **ours**. Patches 1, 5 and 6 all live in
+   rebase re-inherits upstream's `from:` declaration — take **ours**, retuned to the new base tag's
+   own tested minor (step 5). Patches 1, 4, 5 and 6 all live in
    `SyncEngine`'s error-handling region and are the likeliest to need re-application by idiom; patch 6
    in particular *removes* two codes from each of two upstream case lists, so a conflict resolved by
    taking upstream's list silently reverts it (no compile error — the codes just stop retrying).
-4. **Vacuity guard (required), once per behavior patch:**
+4. **Vacuity guard (required), once per behavior patch.** Each patch commit also carries its guard
+   tests and this doc's text, so a bare `git revert --no-commit` deletes the test file (a 0-test
+   run, not a red one) and conflicts on `MANGO-PATCHES.md` — after the revert, restore everything
+   but the library source (`git checkout HEAD -- MANGO-PATCHES.md Tests/`) before running the
+   filter (verified the guards this way on the 1.9 rebase, 2026-08-10):
    - `git revert --no-commit <patch-1 sha>` → `swift test --filter ReferenceViolationGuardTests`
      must go **red** on `cascadeChild_isParkedAndReEnqueued_notDeleted` (all three assertions);
      `git reset --hard` → green.
+   - `git revert --no-commit <patch-4 sha>` → `swift test --filter FailedAssetDownloadParkTests`
+     must go **red** on both tests (the park assertions fail; the husk's NOT NULL constraint error
+     surfaces as the recorded issue); `git reset --hard` → green.
    - `git revert --no-commit <patch-5 sha>` → `swift test --filter DeleteLocalDataFailureTests`
      must go **red** on `failedClearThrows` (the `thrownError != nil` assertion); `git reset --hard`
      → green.

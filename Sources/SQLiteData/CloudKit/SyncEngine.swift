@@ -2079,6 +2079,22 @@
               .find(serverRecord.recordID)
               .update { $0.setLastKnownServerRecord(serverRecord) }
               .execute(db)
+          } catch let error as AssetDataNotLoadable {
+            // MANGO PATCH 4 — a failed asset download parks for retry, patch-1 idiom: the parked
+            // ID is re-fetched (with its assets) by the unsynced drain on the next fetch round.
+            // Skipping `setLastKnownServerRecord` above keeps the record un-applied. Diagnostic
+            // per the patch-2 idiom — the park must never be invisible.
+            reportIssue(
+              """
+              sqlite-data sync: asset data not loadable, parked for retry — \
+              recordType=\(serverRecord.recordType) column=\(error.columnName)
+              """
+            )
+            try UnsyncedRecordID.insert {
+              UnsyncedRecordID(recordID: serverRecord.recordID)
+            } onConflictDoUpdate: { _ in
+            }
+            .execute(db)
           } catch {
             guard
               let error = error as? DatabaseError,
@@ -2566,12 +2582,24 @@
     }
   }
 
+  // MANGO PATCH 4 — thrown by `upsert` when a fetched record's `CKAsset` cannot be loaded
+  // (`fileURL` nil, or the temporary asset file unreadable). Upstream maps that failure to a
+  // literal `NULL`, silently: on a `NOT NULL` bytes column the row's insert fails and the record
+  // is dropped from the fetch permanently (the change token advances — a permanent local husk);
+  // on a nullable column it would *overwrite existing good bytes with NULL*, with zero telemetry.
+  // A failed download is a transient condition, not a decision — the caller parks the record in
+  // `UnsyncedRecordID` so the next fetch round re-downloads the asset and retries.
+  @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
+  struct AssetDataNotLoadable: Error {
+    let columnName: String
+  }
+
   @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
   private func upsert<T>(
     _: some SynchronizableTable<T>,
     record: CKRecord,
     columnNames: some Collection<String>
-  ) -> QueryFragment {
+  ) throws -> QueryFragment {
     let setColumnNames = T.TableColumns.writableColumns.map(\.name)
       .filter { record.hasSet(key: $0) }
     guard !setColumnNames.isEmpty
@@ -2584,12 +2612,19 @@
     query.append(setColumnNames.map { "\(quote: $0)" }.joined(separator: ", "))
     query.append(") VALUES (")
     query.append(
-      setColumnNames
+      try setColumnNames
         .map { columnName in
           if let asset = record[columnName] as? CKAsset {
             @Dependency(\.dataManager) var dataManager
-            return (try? asset.fileURL.map { try dataManager.load($0) })?
-              .queryFragment ?? "NULL"
+            // MANGO PATCH 4 — a failed asset load must not be written as `NULL`; see
+            // `AssetDataNotLoadable` above.
+            guard
+              let fileURL = asset.fileURL,
+              let data = try? dataManager.load(fileURL)
+            else {
+              throw AssetDataNotLoadable(columnName: columnName)
+            }
+            return data.queryFragment
           } else {
             return record.encryptedValues[columnName]?.queryFragment ?? "NULL"
           }
