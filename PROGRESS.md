@@ -38,7 +38,7 @@
   - [ ] 4.3 `tearDownSyncEngine` drops triggers with `drop(ifExists: true)` so a failed `deleteLocalData()` clear is retryable in-process (`MANGO-PATCHES.md` § patch 5 known limitation)
 - [ ] 🏁 **MILESTONE: Open patch work done** ← stop for review
 - [ ] **Phase 5 — Consumer fix round: the 1.0(16) matrix findings (F2 + F10)** _(jumps the queue ahead of Phase 4 — release-blocking for MonteSprout; evidence: the consumer's `docs/incidents/2026-08-15-device-matrix-1.0.16.md`; scope prose: `MANGO-PATCHES.md` § 7 defect note + § 9 Planned)_
-  - [ ] 5.1 Patch 7 amendment — F2: reproduce the mirror false-positive with a slim-ack test (ack record WITHOUT encrypted custom fields → `?? -1` into the mirror), VERIFY the suspect before patching, then guard the mirror write; if it does not reproduce, characterize the real writer first [model: fable]
+  - [x] 5.1 Patch 7 amendment — F2: slim-ack `?? -1` mirror false-positive → reproduced red first, then guarded (a stampless ack leaves the mirror untouched) [model: fable]
   - [ ] 5.2 Patch 9 — F10: engine-start targeted re-enqueue REQUIRED (never-confirmed + mirror-behind rows; the only half that heals already-stranded fleet rows; blanket reupload ruled out), durable park optional hardening; kill-restart-shaped guard test + vacuity check _(depends on 5.1 — a flooded mirror degrades the targeted rescan into the blanket reupload)_ [model: fable]
 - [ ] 🏁 **MILESTONE: Consumer-clearing patches done** ← stop; MonteSprout adopts both in ONE `/mango-update` (its 48.3), then cuts 1.0(17)
 
@@ -46,27 +46,24 @@
 
 ## Current Status
 
-- **Current phase / sub-phase:** 5.1 — Patch 7 amendment (F2 mirror false-positive)
-- **State:** not-started — **Phase 5 jumps the queue ahead of Phase 4** (release-blocking for the
-  consumer; Phase 4 stays open and blocks nothing — 4.2's patch 8 is adjacent territory and rebases on
-  top of Phase 5 when it comes)
-- **Last completed:** 3.2 — Patch 4, asset-download park (stack of 7 patches + guards green on `mango/patches-1.9`, verified 2026-08-10)
-- **Build:** green · **Tests:** green (as of 2026-08-10; re-verify before starting 5.x) · **Simulator-verified:** n/a
+- **Current phase / sub-phase:** 5.2 — Patch 9 (F10: engine-start targeted re-enqueue)
+- **State:** not-started — Phase 5 continues to run ahead of Phase 4 (release-blocking for the consumer)
+- **Last completed:** 5.1 — Patch 7 F2 amendment (suspect reproduced red on the `-1` mechanism, then the stampless-ack guard landed; full suite green twice, 2026-08-15)
+- **Build:** green · **Tests:** green (2026-08-15) · **Simulator-verified:** n/a
 
 ---
 
 ## Next Concrete Action
 
-> Implement 5.1 (⚠ [model: fable] — check the session model first): re-verify the suite green, then
-> write the FAILING test — an `UnsentUpdateVisibilityTests`-style case whose save-ack record **omits
-> the encrypted custom fields** (the mocked container echoes full records today; that blind spot is why
-> the suite stayed green while every real device false-positived). Confirm the mirror lands at `-1` via
-> `handleSentRecordZoneChanges` → `refreshLastKnownServerRecord` → `setLastKnownServerRecord`
-> (`CKRecord.userModificationTime`'s `?? -1` getter, CloudKit+StructuredQueries.swift:347). **If it
-> does NOT reproduce, stop and characterize the real writer before patching** (consumer DECISIONS
-> § "Planning the matrix fix round"). Then guard the mirror write (never write a stamp the ack didn't
-> carry), re-record affected snapshots, amend `MANGO-PATCHES.md` § 7 (defect note → fixed), full suite
-> twice. Then 5.2 (patch 9) per § 9 Planned. _(4.1's bounded-range audit resumes after Phase 5.)_
+> Implement 5.2 (⚠ [model: fable] — check the session model first): patch 9 per `MANGO-PATCHES.md` § 9
+> Planned — the engine-start targeted re-enqueue is the REQUIRED half: at `start()`, re-enqueue exactly
+> `lastKnownServerRecord IS NULL` (never confirmed) plus `serverUserModificationTime <
+> userModificationTime` (mirror-behind) rows; never a blanket reupload, and **never rescan NULL-mirror
+> rows** (after 5.1, a slim-ack device's confirmed rows keep a NULL mirror — selecting them IS the
+> blanket reupload the consumer ruled out). Durable park is optional hardening. Guard: a
+> kill-restart-shaped test that goes red when the rescan is reverted + vacuity check; full suite twice;
+> rewrite § 9 from Planned to landed; add its cherry-pick + vacuity entries to the rebase procedure.
+> _(4.1's bounded-range audit resumes after Phase 5.)_
 
 ---
 
@@ -91,6 +88,7 @@
 - Every retarget must follow `MANGO-PATCHES.md` § Rebase procedure including the per-patch vacuity guards — a skipped guard can silently drop a patch.
 - Consumers pin by revision in lockstep (same SHA, same SSH URL form); pushes here are inert until pins bump — never bump pins as a side effect of other work (`/mango-update` owns that).
 - Assumed in-sync at adoption: suite last verified green 2026-08-10; re-verify before starting the next sub-phase.
+- After 5.1, on devices whose acks stay slim, the mirror holds NULL for confirmed rows — 5.2's mirror-behind predicate only fires where acks carry stamps; its main field value is the never-confirmed half. A NULL mirror is "unknown", never a rescan trigger.
 
 ---
 
