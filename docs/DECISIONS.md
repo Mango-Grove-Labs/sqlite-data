@@ -28,3 +28,24 @@ files); none touch upstream content.
 6. **Retro phase labels 1–3 are new identifiers** minted by /adopt for the shipped
    patch stack (grouped by base tag: 1.6.6 → 1.7.0 → 1.9.0); they appear nowhere in
    prior commits/docs — treat them as stable from now on.
+
+## 2026-08-15 — Phase 5: the consumer fix round (MonteSprout 1.0(16) matrix findings)
+
+Planned from the consumer's evidence (`MonteSprout/docs/incidents/2026-08-15-device-matrix-1.0.16.md`);
+the matrix failed on S5 and MonteSprout's build 17 is gated on these two slices.
+
+1. **Phase 5 jumps the queue ahead of Phase 4.** Release-blocking consumer work beats hygiene; Phase 4
+   stays open and blocks nothing (4.2's planned patch 8 is adjacent send-queue territory and rebases on
+   top of Phase 5 whenever it's built).
+2. **Numbering: F2 = an AMENDMENT to patch 7, not a new patch** — it repairs patch 7's own mirror
+   write. **F10 = patch 9**, leaving 8 reserved for the long-planned metadata-read patch (the catalog's
+   numbers stay stable; § 8's own numbering note is precedent).
+3. **Verify-before-patch is contractual for 5.1.** The false positive is proven behaviorally (four
+   consumer ledger data points, each = exactly its own uploads); the slim-ack `?? -1` write path is the
+   prime suspect, not an observation — the slice starts with a reproducing test, and a non-reproducing
+   test means characterize the real writer, not patch the suspect anyway.
+4. **5.2's rescan is TARGETED, never blanket** (never-confirmed + mirror-behind rows only) — the
+   consumer's owner explicitly ruled out an automatic full reupload (blob rewrite cost, fleet re-fetch,
+   stamp-stomp risk); hence the hard dependency 5.1 → 5.2 (a flooded mirror makes "targeted" = "all").
+5. **Adoption is ONE pin bump after both slices** (MonteSprout 48.3 via `/mango-update`), then the
+   consumer cuts 1.0(17) and re-runs its full matrix — the fork's milestone stops here for review.

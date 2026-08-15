@@ -14,3 +14,16 @@ predates adoption and stays intact at root by decision (see `docs/DECISIONS.md`
 journal, the decisions log, and a PRD placeholder. Open items collected into Roadmap
 phase 4: the owed unbounded-range audit (GRDB first), patch 8 (a read failure must not
 masquerade as a deletion), and the `drop(ifExists:)` teardown fix.
+
+## 2026-08-15 — Phase 5 planned: the consumer fix round (no code changed)
+
+Planned from MonteSprout's 1.0(16) device-matrix evidence (its
+`docs/incidents/2026-08-15-device-matrix-1.0.16.md`; the matrix failed on S5, build 17
+is gated on this). Two slices, jumping the queue ahead of Phase 4: 5.1 = patch 7
+amendment for the F2 mirror false-positive (verify-before-patch contractual — the
+slim-ack `?? -1` suspect must reproduce in a failing test first), 5.2 = patch 9 for F10
+(engine-start targeted re-enqueue REQUIRED — plan-review amendment: it is the only half
+that heals already-stranded fleet rows, so "either half suffices" was dropped; durable
+park demoted to optional hardening). Docs only: `MANGO-PATCHES.md` § 7 defect note +
+§ 9 Planned, PROGRESS Phase 5 + cursor at 5.1, DECISIONS § Phase 5. Both slices tagged
+`[model: fable]`.
