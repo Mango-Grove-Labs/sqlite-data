@@ -297,6 +297,17 @@ fails), and re-record inline snapshots after a rebase — the column appears in 
   `.serverRejectedRequest` path. **Read via SQL, never via the archived record** — a mirror test that reads
   the thing being mirrored passes with the patch reverted (caught by the vacuity guard, 2026-07-25).
 
+⚠️ **KNOWN DEFECT (field, 2026-08-15 — fix owed as the Phase-5.1 amendment):** on real CloudKit, the
+mirror **false-positives on every uploading device** — each ledger reads exactly its own uploaded-row
+count as "unsent", forever (MonteSprout 1.0(16) matrix: four data points, 234/9/1/176; downloaded rows
+always clean; `docs/incidents/2026-08-15-device-matrix-1.0.16.md` in the consumer repo). **Prime
+suspect, to VERIFY before patching:** the save-ack path (`handleSentRecordZoneChanges` →
+`refreshLastKnownServerRecord` → `setLastKnownServerRecord`) receiving records without the encrypted
+custom fields, so `CKRecord.userModificationTime`'s `?? -1` getter fallback lands in the mirror —
+`UnsentUpdateVisibilityTests`' mocked acks echo full records, which is exactly why the suite stays
+green. Consequence in the consumer: the one counter that structurally sees a stranded edit is
+unreadable, and MangoSync's `clearIfLedgerSettled` (41.1b) can never fire on an uploading device.
+
 ### 8. Planned — don't let a read failure masquerade as a deletion
 
 *Not yet implemented. Recorded here so the amplifier isn't forgotten once patch 3 hides it.*
@@ -315,6 +326,35 @@ arguably wrong").
 
 (Numbering note: this item briefly shared the number 4 with the asset-park patch while both were
 unwritten; the asset patch kept 4 on implementation, this one moved to 8.)
+
+### 9. Planned — a parked save must survive the process; a stranded row must be rescanned at start
+
+*MonteSprout F10 (the 1.0(16) matrix's hard failure; Phase-5.2 here). Evidence + timeline:
+the consumer's `docs/incidents/2026-08-15-device-matrix-1.0.16.md`.*
+
+Patch 6 parks a failed save by re-enqueueing into **CKSyncEngine's in-memory state** — documented at the
+time as "in-memory until serialized … degrades to today's behavior, never worse". The matrix proved the
+degraded case is now worse than "today" ever was: after a force-quit inside the park window, **nothing**
+re-enqueues the row — not account restoration (the transition machinery demonstrably ran: the keep-data
+delegate breadcrumb fired), not relaunch (on the 1.9 base no engine-start path rescans the ledger; the
+1.0(15) behavior where relaunch healed is gone). Result: writes stranded silently and permanently,
+`pending=0` honest-but-blind, recovered only by a manual `forceFullReupload`.
+
+Fix shape:
+- **Engine-start targeted re-enqueue (REQUIRED)** — at `start()`, re-enqueue exactly the rows the ledger
+  already knows are stranded: `lastKnownServerRecord IS NULL` (never confirmed) plus
+  `serverUserModificationTime < userModificationTime` (unsent edit, patch 7's mirror). This is the only
+  half that heals rows **already stranded in the field** — a durable park protects future parks but does
+  nothing for a fleet device that hit the window before the fix ships, so it cannot suffice alone.
+  **Never a blanket
+  reupload** (blob-table rewrite cost, fleet-wide re-fetch, stamp-stomp risk — consumer DECISIONS,
+  2026-08-15). ⚠ **Depends on the § 7 amendment landing first**: with the mirror flooded, the "targeted"
+  predicate selects every row and becomes the blanket reupload just ruled out.
+- **Durable park (optional hardening)** — persist the park (or force a state serialization) at park
+  time, so a process death can't lose it and the row never waits for the next engine start.
+
+Guard tests per fork discipline (a kill-restart-shaped test that goes red when the rescan is reverted),
+vacuity check, and this section rewritten from Planned to landed on implementation.
 
 ### Characterization — what a "waiting to upload" count derived from `lastKnownServerRecord` cannot see
 

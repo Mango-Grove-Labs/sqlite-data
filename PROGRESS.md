@@ -37,21 +37,36 @@
   - [ ] 4.2 Patch 8 — a failed metadata read in `nextRecordZoneChangeBatch` parks/retries; only a genuinely absent record leaves the queue (`MANGO-PATCHES.md` § 8)
   - [ ] 4.3 `tearDownSyncEngine` drops triggers with `drop(ifExists: true)` so a failed `deleteLocalData()` clear is retryable in-process (`MANGO-PATCHES.md` § patch 5 known limitation)
 - [ ] 🏁 **MILESTONE: Open patch work done** ← stop for review
+- [ ] **Phase 5 — Consumer fix round: the 1.0(16) matrix findings (F2 + F10)** _(jumps the queue ahead of Phase 4 — release-blocking for MonteSprout; evidence: the consumer's `docs/incidents/2026-08-15-device-matrix-1.0.16.md`; scope prose: `MANGO-PATCHES.md` § 7 defect note + § 9 Planned)_
+  - [ ] 5.1 Patch 7 amendment — F2: reproduce the mirror false-positive with a slim-ack test (ack record WITHOUT encrypted custom fields → `?? -1` into the mirror), VERIFY the suspect before patching, then guard the mirror write; if it does not reproduce, characterize the real writer first [model: fable]
+  - [ ] 5.2 Patch 9 — F10: engine-start targeted re-enqueue REQUIRED (never-confirmed + mirror-behind rows; the only half that heals already-stranded fleet rows; blanket reupload ruled out), durable park optional hardening; kill-restart-shaped guard test + vacuity check _(depends on 5.1 — a flooded mirror degrades the targeted rescan into the blanket reupload)_ [model: fable]
+- [ ] 🏁 **MILESTONE: Consumer-clearing patches done** ← stop; MonteSprout adopts both in ONE `/mango-update` (its 48.3), then cuts 1.0(17)
 
 ---
 
 ## Current Status
 
-- **Current phase / sub-phase:** 4.1 — Bounded-range audit
-- **State:** not-started
+- **Current phase / sub-phase:** 5.1 — Patch 7 amendment (F2 mirror false-positive)
+- **State:** not-started — **Phase 5 jumps the queue ahead of Phase 4** (release-blocking for the
+  consumer; Phase 4 stays open and blocks nothing — 4.2's patch 8 is adjacent territory and rebases on
+  top of Phase 5 when it comes)
 - **Last completed:** 3.2 — Patch 4, asset-download park (stack of 7 patches + guards green on `mango/patches-1.9`, verified 2026-08-10)
-- **Build:** green · **Tests:** green (as of 2026-08-10) · **Simulator-verified:** n/a
+- **Build:** green · **Tests:** green (as of 2026-08-10; re-verify before starting 5.x) · **Simulator-verified:** n/a
 
 ---
 
 ## Next Concrete Action
 
-> Implement 4.1: in `Package.swift` (and `Package@swift-6.0.swift`), bound each remaining unbounded `from:` dependency to the minor the 1.9.0 base tag's own `Package.resolved` pins (GRDB first: declared `from: "7.6.0"`, resolves 7.11.0), per the patch-3 rationale in `MANGO-PATCHES.md`; run the full suite twice; update the § patch 3 "Owed" paragraph; consumers' pins are unaffected until bumped in lockstep.
+> Implement 5.1 (⚠ [model: fable] — check the session model first): re-verify the suite green, then
+> write the FAILING test — an `UnsentUpdateVisibilityTests`-style case whose save-ack record **omits
+> the encrypted custom fields** (the mocked container echoes full records today; that blind spot is why
+> the suite stayed green while every real device false-positived). Confirm the mirror lands at `-1` via
+> `handleSentRecordZoneChanges` → `refreshLastKnownServerRecord` → `setLastKnownServerRecord`
+> (`CKRecord.userModificationTime`'s `?? -1` getter, CloudKit+StructuredQueries.swift:347). **If it
+> does NOT reproduce, stop and characterize the real writer before patching** (consumer DECISIONS
+> § "Planning the matrix fix round"). Then guard the mirror write (never write a stamp the ack didn't
+> carry), re-record affected snapshots, amend `MANGO-PATCHES.md` § 7 (defect note → fixed), full suite
+> twice. Then 5.2 (patch 9) per § 9 Planned. _(4.1's bounded-range audit resumes after Phase 5.)_
 
 ---
 
@@ -75,7 +90,7 @@
 - Patch work is consumer-driven: read the consuming app's incident record (MonteSprout `docs/incidents/…`) before changing or reviewing a patch.
 - Every retarget must follow `MANGO-PATCHES.md` § Rebase procedure including the per-patch vacuity guards — a skipped guard can silently drop a patch.
 - Consumers pin by revision in lockstep (same SHA, same SSH URL form); pushes here are inert until pins bump — never bump pins as a side effect of other work (`/mango-update` owns that).
-- Assumed in-sync at adoption: suite last verified green 2026-08-10; re-verify before starting 4.x.
+- Assumed in-sync at adoption: suite last verified green 2026-08-10; re-verify before starting the next sub-phase.
 
 ---
 
