@@ -27,3 +27,19 @@ that heals already-stranded fleet rows, so "either half suffices" was dropped; d
 park demoted to optional hardening). Docs only: `MANGO-PATCHES.md` § 7 defect note +
 § 9 Planned, PROGRESS Phase 5 + cursor at 5.1, DECISIONS § Phase 5. Both slices tagged
 `[model: fable]`.
+
+## 2026-08-15 — 5.1 shipped: patch 7 F2 amendment (the stampless-ack mirror guard)
+
+Verify-before-patch held: two new `UnsentUpdateVisibilityTests` cases injected a slim save
+ack (no encrypted custom fields — what real CloudKit delivers; the mock echoes full
+records) into `handleSentRecordZoneChanges` and went red on exactly the predicted
+mechanism — mirror = `-1` via the `CKRecord.userModificationTime` getter fallback, unsent
+count false-positive 1, and a slim re-ack stomping a previously-correct stamp. Fix in the
+funnel (`setLastKnownServerRecord`): only mirror a stamp the record carries; stampless →
+mirror and max-bump untouched; nil record still nils the mirror — the fetch path's
+`upsertFromServerRecord` top guard applied to the save-ack path. Suite: 2 new tests, full
+run green ×2. Gotcha for 5.2: on slim-ack devices confirmed rows now keep a NULL mirror —
+the targeted rescan must treat NULL as "unknown", never as a rescan trigger, or it
+degrades into the ruled-out blanket reupload (recorded in PROGRESS Assumptions & Risks).
+MANGO-PATCHES: § 7 defect note rewritten as the landed F2 amendment; rebase procedure
+gains its cherry-pick + vacuity-guard entries.

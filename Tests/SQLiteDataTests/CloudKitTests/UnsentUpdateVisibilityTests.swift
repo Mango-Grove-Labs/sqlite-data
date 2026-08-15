@@ -57,6 +57,22 @@
         }
       }
 
+      /// The consumer-side predicate the mirror exists to enable (MonteSprout's unsent-edit count).
+      @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
+      private func unsentEdits() async throws -> Int {
+        try await syncEngine.metadatabase.read { db in
+          try Int.fetchOne(
+            db,
+            sql: #"""
+              SELECT count(*) FROM "sqlitedata_icloud_metadata"
+               WHERE "lastKnownServerRecord" IS NOT NULL
+                 AND "serverUserModificationTime" < "userModificationTime"
+                 AND "_isDeleted" = 0
+              """#
+          ) ?? -1
+        }
+      }
+
       /// The metadata's own modification time and the one archived in the all-fields server record.
       @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
       private func modificationTimes() async throws -> (local: Int64, server: Int64?) {
@@ -111,21 +127,6 @@
       /// This is the whole point of the mirror — the state above becomes an ordinary SQL predicate.
       @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
       @Test func theMirroredServerStampMakesAnUnsentEditCountable() async throws {
-        /// The consumer-side predicate this column exists to enable.
-        func unsentEdits() async throws -> Int {
-          try await syncEngine.metadatabase.read { db in
-            try Int.fetchOne(
-              db,
-              sql: #"""
-                SELECT count(*) FROM "sqlitedata_icloud_metadata"
-                 WHERE "lastKnownServerRecord" IS NOT NULL
-                   AND "serverUserModificationTime" < "userModificationTime"
-                   AND "_isDeleted" = 0
-                """#
-            ) ?? -1
-          }
-        }
-
         try await userDatabase.userWrite { db in
           try db.seed { RemindersList(id: 1, title: "Personal") }
         }
@@ -183,6 +184,65 @@
         }
 
         #expect(try await mirroredServerStamp() == nil)
+      }
+
+      /// Patch 7 amendment (F2, the 1.0(16) matrix false-positive): a save ack that does NOT carry the
+      /// encrypted custom fields — what real CloudKit delivers, unlike the mocked container's full-record
+      /// echo — must never land the `?? -1` getter fallback in the mirror. On a first upload the mirror
+      /// stays `nil` ("stamp unknown"), and the unsent-edit count stays 0 instead of false-positiving on
+      /// every uploaded row forever (the fetch path already refuses stampless records at the top of
+      /// `upsertFromServerRecord`; this pins the same discipline on the save-ack path).
+      @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
+      @Test func aStamplessSaveAckNeverInventsAMirrorStamp() async throws {
+        try await userDatabase.userWrite { db in
+          try db.seed { RemindersList(id: 1, title: "Personal") }
+        }
+        // The ack for the pending save arrives slim: system fields only, no encrypted values.
+        let slimAck = CKRecord(
+          recordType: RemindersList.tableName,
+          recordID: RemindersList.recordID(for: 1)
+        )
+        await syncEngine.handleSentRecordZoneChanges(
+          savedRecords: [slimAck],
+          syncEngine: syncEngine.private
+        )
+
+        // The row did reach the server (the never-confirmed count no longer sees it)…
+        #expect(try await recordsAwaitingUpload() == 0)
+        // …and the mirror holds no invented stamp: nil, not -1 — so the predicate reads 0, not 1.
+        #expect(try await mirroredServerStamp() == nil)
+        #expect(try await unsentEdits() == 0)
+
+        // The seeded row's save is still in the engine's pending set — the injection above is the ack
+        // handler alone, not a send round. (Asserting also drains it for the harness teardown.)
+        syncEngine.private.state.assertPendingRecordZoneChanges([
+          .saveRecord(RemindersList.recordID(for: 1))
+        ])
+      }
+
+      /// The update half of the same guard: a slim re-ack after a genuine round trip must PRESERVE the
+      /// earlier, correct mirror stamp — never overwrite it with the -1 fallback. (On a nullable-mirror
+      /// row this is the stamp-stomp direction: good data destroyed by an ack that carried nothing.)
+      @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
+      @Test func aStamplessReAckPreservesTheEarlierMirrorStamp() async throws {
+        try await userDatabase.userWrite { db in
+          try db.seed { RemindersList(id: 1, title: "Personal") }
+        }
+        try await syncEngine.processPendingRecordZoneChanges(scope: .private)
+        let confirmed = try await mirroredServerStamp()
+        #expect(confirmed != nil)  // the full mock round trip mirrored the real stamp
+
+        let slimAck = CKRecord(
+          recordType: RemindersList.tableName,
+          recordID: RemindersList.recordID(for: 1)
+        )
+        await syncEngine.handleSentRecordZoneChanges(
+          savedRecords: [slimAck],
+          syncEngine: syncEngine.private
+        )
+
+        #expect(try await mirroredServerStamp() == confirmed)
+        #expect(try await unsentEdits() == 0)
       }
     }
   }

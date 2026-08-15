@@ -2571,13 +2571,25 @@
       // Every write of `lastKnownServerRecord` funnels through here, so the mirror cannot drift from what
       // it describes — including the clearing case, where a nil record must nil the mirror rather than
       // leave a time that would read as "in sync" with a server copy that no longer exists.
-      self.serverUserModificationTime = #bind(lastKnownServerRecord?.userModificationTime)
+      //
+      // F2 amendment (patch 7, 1.0(16) matrix): only mirror a stamp the record actually CARRIES. A real
+      // CloudKit save ack arrives without the encrypted custom fields, so `userModificationTime`'s getter
+      // falls back to -1 — writing that made every uploaded row read as an unsent edit forever, and a
+      // later slim re-ack stomped a previously-correct stamp. A stampless record leaves the mirror (and
+      // the local-stamp max-bump) untouched: "unknown" stays NULL, never becomes an invented time. The
+      // fetch path already enforces this at the top of `upsertFromServerRecord`; this is the save-ack
+      // path's version of the same discipline.
       if let lastKnownServerRecord {
-        self.userModificationTime = #sql(
-          """
-          max(\(self.userModificationTime), \(lastKnownServerRecord.userModificationTime))
-          """
-        )
+        if lastKnownServerRecord.encryptedValues[CKRecord.userModificationTimeKey] != nil {
+          self.serverUserModificationTime = #bind(lastKnownServerRecord.userModificationTime)
+          self.userModificationTime = #sql(
+            """
+            max(\(self.userModificationTime), \(lastKnownServerRecord.userModificationTime))
+            """
+          )
+        }
+      } else {
+        self.serverUserModificationTime = #bind(nil)
       }
     }
   }

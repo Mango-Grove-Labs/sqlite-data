@@ -297,16 +297,22 @@ fails), and re-record inline snapshots after a rebase — the column appears in 
   `.serverRejectedRequest` path. **Read via SQL, never via the archived record** — a mirror test that reads
   the thing being mirrored passes with the patch reverted (caught by the vacuity guard, 2026-07-25).
 
-⚠️ **KNOWN DEFECT (field, 2026-08-15 — fix owed as the Phase-5.1 amendment):** on real CloudKit, the
-mirror **false-positives on every uploading device** — each ledger reads exactly its own uploaded-row
-count as "unsent", forever (MonteSprout 1.0(16) matrix: four data points, 234/9/1/176; downloaded rows
-always clean; `docs/incidents/2026-08-15-device-matrix-1.0.16.md` in the consumer repo). **Prime
-suspect, to VERIFY before patching:** the save-ack path (`handleSentRecordZoneChanges` →
-`refreshLastKnownServerRecord` → `setLastKnownServerRecord`) receiving records without the encrypted
-custom fields, so `CKRecord.userModificationTime`'s `?? -1` getter fallback lands in the mirror —
-`UnsentUpdateVisibilityTests`' mocked acks echo full records, which is exactly why the suite stays
-green. Consequence in the consumer: the one counter that structurally sees a stranded edit is
-unreadable, and MangoSync's `clearIfLedgerSettled` (41.1b) can never fire on an uploading device.
+**F2 amendment (fixed 2026-08-15; found in the field as MonteSprout's 1.0(16) matrix F2):** on real
+CloudKit the mirror **false-positived on every uploading device** — each ledger read exactly its own
+uploaded-row count as "unsent", forever (four data points, 234/9/1/176; downloaded rows always clean;
+`docs/incidents/2026-08-15-device-matrix-1.0.16.md` in the consumer repo). Verified before patching, per
+the plan's contract: the suspect reproduced exactly — a save ack **without the encrypted custom fields**
+(what real CloudKit delivers; the mocked container echoes full records, which is why the suite stayed
+green) flows `handleSentRecordZoneChanges` → `refreshLastKnownServerRecord` → `setLastKnownServerRecord`,
+and `CKRecord.userModificationTime`'s `?? -1` getter fallback landed in the mirror. The fix, in the
+funnel: **only mirror a stamp the record actually carries** — a stampless record leaves the mirror and
+the local-stamp max-bump untouched (unknown stays NULL, never an invented time; a slim re-ack can no
+longer stomp a previously-correct stamp), while a nil record still nils the mirror. Same discipline the
+fetch path always had (`upsertFromServerRecord`'s top guard). Field consequence: the mirror reads NULL
+rather than false-positiving where CloudKit acks stay slim — honest, and exactly what § 9's targeted
+rescan predicate needs to not degrade into a blanket reupload. Guarded by the two `aStamplessAck…` /
+`aStamplessReAck…` tests in `UnsentUpdateVisibilityTests` (verified red on the unpatched funnel,
+2026-08-15, on the `-1` mechanism itself).
 
 ### 8. Planned — don't let a read failure masquerade as a deletion
 
@@ -442,7 +448,8 @@ nothing newer to move to.
    `upsert` throws `AssetDataNotLoadable`, the apply path parks instead of emitting `NULL`)**,
    **patch 5 (the throwing
    `deleteLocalData()` clear)**, **patch 6 (auth-transition park-and-retry)**, **patch 7 (the mirrored
-   server `userModificationTime` — schema, so keep its migration registered after upstream's)**, the test
+   server `userModificationTime` — schema, so keep its migration registered after upstream's) plus its
+   F2 amendment commit (the stampless-ack mirror guard in `setLastKnownServerRecord`)**, the test
    commits (take them from the tip of the previous `mango/patches-*` branch). Resolve conflicts by **idiom, not line
    number** — the `SyncEngine` error-handling region drifts. Patch 3 conflicts every time, because the
    rebase re-inherits upstream's `from:` declaration — take **ours**, retuned to the new base tag's
@@ -473,6 +480,10 @@ nothing newer to move to.
      `clearingTheServerRecordClearsTheMirror`, while the characterization test
      (`anUnsentUpdateIsInvisibleToEveryNeverConfirmedCount`) stays green — it describes upstream behavior,
      which the patch does not change. `git reset --hard` → green.
+   - `git revert --no-commit <patch-7 F2-amendment sha>` → `swift test --filter
+     UnsentUpdateVisibilityTests` must go **red** on `aStamplessSaveAckNeverInventsAMirrorStamp` *and*
+     `aStamplessReAckPreservesTheEarlierMirrorStamp` (both on the `-1` mechanism), while the other three
+     stay green; `git reset --hard` → green.
 
    A rebase that skips these can silently drop a guard.
 5. **Manifest check (required):** confirm `Package.swift` still carries an `.upToNextMinor`
