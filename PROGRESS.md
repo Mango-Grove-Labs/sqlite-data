@@ -33,7 +33,7 @@
   - [x] 3.1 Rebase the stack as `mango/patches-1.9` (consumer branch)
   - [x] 3.2 Patch 4 — a failed CKAsset download parks for retry, never writes NULL
 - [ ] **Phase 4 — Open library work**
-  - [ ] 4.1 Bound the remaining unbounded `from:` ranges in `Package.swift` (GRDB is the largest gap) — owed per `MANGO-PATCHES.md` § patch 3; full suite twice
+  - [ ] 4.1 Bound the remaining unbounded `from:` ranges in `Package.swift` (GRDB is the largest gap) — owed per `MANGO-PATCHES.md` § patch 3; full suite twice _(the `Package@swift-6.0.swift` structured-queries half landed with patch 10 on 2026-08-15; GRDB and the rest still open)_
   - [ ] 4.2 Patch 8 — a failed metadata read in `nextRecordZoneChangeBatch` parks/retries; only a genuinely absent record leaves the queue (`MANGO-PATCHES.md` § 8)
   - [ ] 4.3 `tearDownSyncEngine` drops triggers with `drop(ifExists: true)` so a failed `deleteLocalData()` clear is retryable in-process (`MANGO-PATCHES.md` § patch 5 known limitation)
 - [ ] 🏁 **MILESTONE: Open patch work done** ← stop for review
@@ -48,49 +48,50 @@
   - [x] 6.2 Patch 3 retune to `.upToNextMinor(from: "0.36.0")` — 1.10.0's own `Package.resolved` pin
   - [x] 6.3 Take upstream's `TriggerTests` snapshot re-record (tag 1.10.0 ships a stale snapshot; fixed upstream in #522, unreleased)
   - [x] 6.4 Review + commit the retarget, push `mango/patches-1.10`
+- [x] **Phase 7 — Patch 10, from the review of the 1.10.0 retarget** _(the two `AccountLifecycleTests` failures 6.4 recorded as "pre-existing and unexplained" were 5.3b's own; root-caused in review, not by a new report)_
+  - [x] 7.1 Patch 10 — metadatabase lock contention is waited out, never fatal (busy-mode inheritance + bounded ledger-write retries), and the guards + rebase procedure that let it hide; landed on `mango/patches-1.9`, cherry-picked here with the 6.0 manifest bound retuned to this base's `0.36.0`
 
 ---
 
 ## Current Status
 
-- **Current phase / sub-phase:** Phase 6 complete — `mango/patches-1.10` is committed and pushed
-- **State:** milestone-reached (the Phase-5 milestone stop still stands; the retarget was requested outside the roadmap and does not move it)
-- **Last completed:** 6.4 — reviewed, committed and pushed the retarget (guard-rot correction applied to `MANGO-PATCHES.md` in the same pass)
-- **Build:** green · **Tests:** see below · **Simulator-verified:** n/a
+- **Current phase / sub-phase:** Phase 7 complete — patch 10 landed on `mango/patches-1.9` and cherry-picked here
+- **State:** milestone-reached (the Phase-5 milestone stop still stands; the retarget and patch 10 were requested outside the roadmap and do not move it)
+- **Last completed:** 7.1 — patch 10, metadatabase lock contention (busy-mode inheritance + bounded ledger-write retries); the four `MetadatabaseBusyModeTests` guards red-verified pre-patch
+- **Build:** green · **Tests:** green — **333 tests, ZERO failures, twice** on this branch (2026-08-15), and four consecutive zero-failure full runs on `mango/patches-1.9` · **Simulator-verified:** n/a
 
-**Test state on `mango/patches-1.10` (full suite, run twice, 2026-08-15):** 329 tests, **2 failures**,
-both **pre-existing** — `AccountLifecycleTests.signInUploadsLocalRecordsToCloudKit_SkipExistingCloudKitRecords`
-and `AccountLifecycleTests.createSharedRecordWhileSoftLoggedOut`. Verified pre-existing by running the
-full suite on `mango/patches-1.9`, where they fail the same way (the filtered-run diffs are
-byte-identical between the two branches). They surface either as
-`SQLite error 5: database is locked` at `SyncEngine.swift:669` (full runs) or as an empty-result
-snapshot mismatch (filtered runs) — i.e. load-sensitive, and unrelated to the retarget.
-
-⚠️ **This contradicts the "Tests: green (2026-08-15)" line this file carried before.** Nothing in the
-1.10.0 work touched those tests, and no dependency pin moved (`Package.resolved` changed only its
-`originHash`). Either the earlier green runs dodged a flake, or something in the local environment
-drifted after they were recorded. **Unresolved — worth a look before the next consumer adoption**,
-since a load-sensitive failure in the account-lifecycle path is exactly the class of thing the
-Phase-5 work exists to make trustworthy.
+**The two `AccountLifecycleTests` failures this file previously carried as "pre-existing and
+unexplained" are fixed and explained.** They were not upstream's and not the retarget's: 5.3b's
+always-on ledger made the host connection write to the metadatabase on every local change, and neither
+that connection nor the library's own was configured to wait for a lock. Both tests pass on a clean
+checkout of tag 1.10.0 and on a 5.3b revert — which is what identified the cause. Patch 10 is the fix;
+`MANGO-PATCHES.md` § 10 carries the mechanism, and rebase step 4b now separates "pre-existing" from
+"upstream's" so the next one cannot hide the same way.
 
 ---
 
 ## Next Concrete Action
 
-> **Decide which base MonteSprout 1.0(17) adopts.** `mango/patches-1.10` is pushed, but pushing a
-> fork branch is inert: every consumer still pins `mango/patches-1.9` revisions and those stay valid
-> until a pin moves, which only `/mango-update` does.
+> **Decide which base MonteSprout 1.0(17) adopts — the decision is unchanged, but both bases now
+> carry patch 10.** Pushing a fork branch is inert: every consumer still pins a `mango/patches-1.9`
+> revision and those stay valid until `/mango-update` moves them.
 >
-> Decide before adopting: whether MonteSprout's 1.0(17) should adopt the Phase-5 work off
-> `mango/patches-1.9` (as already planned in its 48.3) or off the newer 1.10.0 base. Those are the
-> same patch behavior on different upstream bases — adopting 1.10.0 also pulls upstream's
-> `@FetchOne` auto-observation and `StrictDecoding` trait, which is a bigger consumer change than a
-> pin bump. Recommend: ship 1.0(17) off 1.9 as planned, adopt 1.10.0 in a later, separate bump.
+> Decide before adopting: whether 1.0(17) takes the Phase-5 work off `mango/patches-1.9` (as planned
+> in its 48.3) or off the newer 1.10.0 base. Same patch behavior on different upstream bases —
+> adopting 1.10.0 also pulls upstream's `@FetchOne` auto-observation and `StrictDecoding` trait, a
+> bigger consumer change than a pin bump. Recommend: ship 1.0(17) off 1.9 as planned (its tip is
+> patch 10), adopt 1.10.0 in a later, separate bump.
+>
+> **Whichever base: do not ship 1.0(17) off a pre-patch-10 revision.** 5.3b's ledger write goes
+> through the host's connection, and without patch 10 a contended write is swallowed — the durability
+> the device matrix exists to verify would be silently absent under exactly the bulk-write conditions
+> the S5 step tests.
 >
 > Still open afterwards, unchanged: 4.1 — bound the remaining unbounded `from:` ranges in
 > `Package.swift` **and `Package@swift-6.0.swift`** to the minors the base tag's own
 > `Package.resolved` pins (GRDB first: declared `from: "7.6.0"`, resolves 7.11.1), per the patch-3
-> rationale; full suite twice; update `MANGO-PATCHES.md` § patch 3 "Owed".
+> rationale; full suite twice; update `MANGO-PATCHES.md` § patch 3 "Owed". The structured-queries
+> half of that audit landed with patch 10.
 
 ---
 

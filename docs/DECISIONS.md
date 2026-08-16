@@ -124,3 +124,25 @@ error. It is strictly stronger than the guards *for the drop question*, and stri
 "is the patch still meaningful on the new base" question, which is why rewriting the rotted guards in
 the 5.3a style (neutralize the mechanism in place, never revert the commit) stays owed rather than
 cancelled.
+
+## 2026-08-15 — Patch 10: inherit-then-upgrade the busy mode, and retry the ledger writes
+
+Context: 5.3b made the host's connection write to the metadatabase on every local change, and
+neither connection was configured to survive the resulting contention (full mechanism in
+`MANGO-PATCHES.md` § 10 and the journal entry of the same date).
+
+1. **The library's metadatabase connection inherits the host's busy mode, and only
+   `.immediateError` is upgraded** (to `.timeout(5)`). Rejected: unconditionally forcing our own
+   timeout — a host that installed a `.timeout` or a `.callback` meant it. Rejected: leaving the
+   default and documenting it — the failure is swallowed, so "documented" means invisible.
+2. **The ledger writes retry, rather than relying on the host hardening its own connection.**
+   MangoSync sets `.timeout(5)`, but the library cannot require that of every host, and the first
+   decision makes the library's connection hold the lock more often than before. Bounded (25/50/100 ms)
+   and narrow (`SQLITE_BUSY`/`SQLITE_LOCKED` only) so a deterministic failure still fails fast.
+3. **The patch's logic lives in a new Mango-owned file.** `CloudKit/Internal/MetadatabaseBusyMode.swift`
+   costs zero rebase conflict surface; upstream files carry three one-line call sites. Preferred over
+   making `defaultMetadatabase` `package` for its tests, which would have forced `package import` on
+   Foundation, GRDB and os inside an upstream file.
+4. **An unexplained test failure is a finding, not a baseline** (rebase procedure 4b). "Fails the same
+   way on the previous branch" only dates the cause; the clean-base-tag run is what assigns it. This
+   episode is the evidence: two failures sat labelled pre-existing while being one commit old.

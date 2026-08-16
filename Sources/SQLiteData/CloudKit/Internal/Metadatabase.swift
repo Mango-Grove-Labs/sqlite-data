@@ -27,6 +27,10 @@
 
     var metadatabaseConfiguration = Configuration()
     metadatabaseConfiguration.observesSuspensionNotifications = configuration.observesSuspensionNotifications
+    // MANGO PATCH 10 — this connection must wait for a lock, never fail immediately. Rationale and
+    // the decision itself live in `MetadatabaseBusyMode.swift` (a Mango-owned file, so the patch costs
+    // one line here).
+    metadatabaseConfiguration.busyMode = mangoMetadatabaseBusyMode(inheriting: configuration.busyMode)
     let metadatabase: any DatabaseWriter =
       if url.isInMemory {
         try DatabaseQueue(
