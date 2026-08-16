@@ -73,3 +73,18 @@ ack/send, drains at start, parks write through) — replacing the review's "park
 at park time", which could never catch a mid-flight force-quit (no park handler ever
 sees it; its own promised stranded-edit test would have stayed red). Milestone
 un-checked until 5.3 lands; both boxes tagged `[model: fable]`. Docs only, no code.
+
+## 2026-08-15 — 5.3a shipped: the sentinel-nulling migration
+
+New metadatabase migration `"Mango: null the legacy -1 mirror sentinels"` (registered
+after patch 7's, name byte-stable): `-1` mirrors → NULL at upgrade, real stamps and
+never-confirmed NULLs untouched. The faithful test needed new infrastructure: a
+migration-prefix hook (`migrate(metadatabase:upTo:)`, now `package`) so the test builds a
+genuinely PRE-upgrade ledger, seeds legacy rows, and runs the full migrator over them —
+a normal engine init has every migration applied before a test can seed anything.
+Red-verified by unregistering the migration block (a bare revert would take the hook with
+it and fail compilation instead — the vacuity entry documents the difference). Plus the
+every-start loop characterization (green either way; pins why 5.3a ships with patch 9).
+Gotcha for 5.3b: the loop test's direct `metadatabase.write` produced NO spurious
+enqueue — the sync triggers live on the user connection, which 5.3b's ledger writes will
+need to account for. 2 new tests; full suite green ×2.

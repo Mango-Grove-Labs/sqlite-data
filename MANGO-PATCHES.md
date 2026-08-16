@@ -370,10 +370,14 @@ Deliberate scope bounds (accepted):
   _Promoted to REQUIRED by consumer review (2026-08-15, Phase 5.3): the two bounds above sit exactly on
   the consumer's S5 matrix step. Same review also found the **legacy `-1` sentinel loop** — pre-amendment
   rows hold mirror `-1`, which this patch's predicate selects at every start while a slim ack never
-  repairs it: an upgraded device blanket-reuploads its whole dataset per launch. 5.3a ships the nulling
-  migration; 5.3b makes the durable `PendingRecordZoneChange` ledger **always-on** (a park-time-only
-  persistence could never catch a mid-flight force-quit — the change is in no park handler's hands),
-  with patch-6 parks writing through it; this note rewrites when they land._
+  repairs it: an upgraded device blanket-reuploads its whole dataset per launch. **Fixed 2026-08-15
+  (5.3a):** the metadatabase migration `"Mango: null the legacy -1 mirror sentinels"` (registered after
+  patch 7's, name byte-stable) nulls the junk at upgrade — honest unknown, preserving real stamps and
+  never-confirmed NULLs; guarded by `LegacySentinelMigrationTests` (a genuine pre-upgrade ledger built
+  via the migration-prefix `upTo:` test hook, red-verified without the migration 2026-08-15) plus the
+  every-start loop characterization. 5.3b (the **always-on** `PendingRecordZoneChange` ledger — a
+  park-time-only persistence could never catch a mid-flight force-quit — with patch-6 parks writing
+  through it) is still owed; this note rewrites again when it lands._
 - **Mirror-behind is inert where acks stay slim.** On real CloudKit a confirmed row's mirror stays NULL
   (F2 amendment), so the mirror-behind half fires only where acks carry stamps; the never-confirmed half
   is the field workhorse.
@@ -475,7 +479,9 @@ nothing newer to move to.
    server `userModificationTime` — schema, so keep its migration registered after upstream's) plus its
    F2 amendment commit (the stampless-ack mirror guard in `setLastKnownServerRecord`)**, **patch 9
    (the engine-start targeted rescan — `enqueueStrandedRecordsForCloudKit` + its `start()` call
-   site)**, the test
+   site)**, **the 5.3a sentinel-nulling migration commit (metadatabase schema — keep its migration
+   registered after patch 7's, name byte-stable; also carries the `package`/`upTo:` migrate hook its
+   test needs)**, the test
    commits (take them from the tip of the previous `mango/patches-*` branch). Resolve conflicts by **idiom, not line
    number** — the `SyncEngine` error-handling region drifts. Patch 3 conflicts every time, because the
    rebase re-inherits upstream's `from:` declaration — take **ours**, retuned to the new base tag's
@@ -514,6 +520,13 @@ nothing newer to move to.
      **red** on `aKilledNeverConfirmedSaveIsReEnqueuedAtStart` *and* `aKilledUnsentEditIsReEnqueuedAtStart`
      (the row stays stranded across the restart), while `confirmedRowsAreNotRescannedAtStart` stays
      green; `git reset --hard` → green.
+   - **5.3a is checked differently** — a bare revert of its commit also removes the `package`/`upTo:`
+     migrate hook, so the restored test file fails to *compile* (loud, but not a red assertion).
+     The meaningful check: unregister only the `"Mango: null the legacy -1 mirror sentinels"`
+     migration block → `swift test --filter LegacySentinelMigrationTests` must go **red** on
+     `theUpgradeNullsLegacySentinelsAndPreservesRealStamps` (the `-1` survives the upgrade); restore
+     → green. The loop characterization (`aLegacySentinelLoopsTheRescanOnEveryStart`) stays green
+     either way — it pins the mechanism, not the fix.
 
    A rebase that skips these can silently drop a guard.
 5. **Manifest check (required):** confirm `Package.swift` still carries an `.upToNextMinor`
