@@ -43,7 +43,11 @@
     return metadatabase
   }
 
-  func migrate(metadatabase: some DatabaseWriter) throws {
+  // MonteSprout fork (Phase 5.3a): `package` + the `upTo:` hook exist for the upgraded-ledger guard
+  // test, which must build a PRE-upgrade metadatabase (a migration prefix), seed legacy rows, and then
+  // run the full migrator over them — the only faithful way to test a data migration, since a normal
+  // engine init has already applied every migration before a test can seed anything.
+  package func migrate(metadatabase: some DatabaseWriter, upTo lastMigration: String? = nil) throws {
     var migrator = DatabaseMigrator()
     migrator.registerMigration("Create Metadata Tables") { db in
       try #sql(
@@ -167,6 +171,25 @@
       )
       .execute(db)
     }
+    // MonteSprout fork (Phase 5.3a, the patch-7 F2 follow-up): null the legacy `-1` mirror sentinels.
+    // Rows uploaded under pre-amendment code hold mirror `-1` — the CKRecord getter fallback the old
+    // ack path wrote on every slim ack. Patch 9's start rescan selects `-1 < userModificationTime` on
+    // EVERY launch, and the amended ack path (correctly) never rewrites a slim ack's mirror — so an
+    // upgraded device would re-enqueue its entire pre-fix dataset per launch, forever: a permanent
+    // de-facto blanket reupload composed from two individually-correct patches. `-1` can never be a
+    // legitimate stamp (the insert half and the amended funnel both require a carried stamp; patch 7's
+    // backfill copies real values), so junk becomes honest unknown. A NEW migration, never an edit to
+    // a released one — the DEBUG assertion below enforces exactly that.
+    migrator.registerMigration("Mango: null the legacy -1 mirror sentinels") { db in
+      try #sql(
+        """
+        UPDATE "\(raw: .sqliteDataCloudKitSchemaName)_metadata"
+           SET "serverUserModificationTime" = NULL
+         WHERE "serverUserModificationTime" = -1
+        """
+      )
+      .execute(db)
+    }
 
     #if DEBUG
       try metadatabase.read { db in
@@ -180,6 +203,10 @@
         )
       }
     #endif
-    try migrator.migrate(metadatabase)
+    if let lastMigration {
+      try migrator.migrate(metadatabase, upTo: lastMigration)
+    } else {
+      try migrator.migrate(metadatabase)
+    }
   }
 #endif
