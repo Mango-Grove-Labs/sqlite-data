@@ -539,6 +539,8 @@
             previousRecordTypeByTableName: previousRecordTypeByTableName,
             currentRecordTypeByTableName: currentRecordTypeByTableName
           )
+          // MANGO PATCH 9 — see `enqueueStrandedRecordsForCloudKit`.
+          try await enqueueStrandedRecordsForCloudKit()
           try await updateLocalFromSchemaChange(
             previousRecordTypeByTableName: previousRecordTypeByTableName,
             currentRecordTypeByTableName: currentRecordTypeByTableName
@@ -668,6 +670,38 @@
         try $_isSynchronizingChanges.withValue(false) {
           try SyncMetadata
             .where { !$0.hasLastKnownServerRecord }
+            .update { $0.recordPrimaryKey = $0.recordPrimaryKey }
+            .execute(db)
+        }
+      }
+    }
+
+    // MANGO PATCH 9 — a stranded row must be rescanned at engine start.
+    //
+    // While the engine runs, a local write's pending save lives only in CKSyncEngine's in-memory
+    // state (the durable `PendingRecordZoneChange` rows are written only while the engine is
+    // stopped), so a process death in that window loses the change — and nothing at start
+    // re-enqueued it: the row stayed stranded permanently while `pending = 0` read honest-but-blind
+    // (MonteSprout 1.0(16) matrix, F10). This re-enqueues, at start, exactly the rows the ledger
+    // already knows are stranded: never confirmed, plus mirror-behind (an unsent edit, visible via
+    // patch 7's `serverUserModificationTime`). Live rows only — a locally-deleted row's stranded
+    // DELETE is out of scope here (re-enqueueing it as a save would resurrect it). A NULL mirror
+    // is "unknown", never a trigger: on real CloudKit a slim save ack leaves confirmed rows with a
+    // NULL mirror (patch 7's F2 amendment), and selecting those would degrade this targeted rescan
+    // into the blanket reupload the consumer ruled out. Same no-op-update idiom as
+    // `enqueueUnknownRecordsForCloudKit` above: the metadata trigger routes each row to the right
+    // engine's pending set.
+    private func enqueueStrandedRecordsForCloudKit() async throws {
+      try await userDatabase.write { db in
+        try $_isSynchronizingChanges.withValue(false) {
+          try SyncMetadata
+            .where {
+              // The mirror-behind half is a raw fragment: SQL's NULL comparison semantics are
+              // load-bearing here (`NULL < x` is NULL → not selected — unknown never triggers).
+              !$0._isDeleted
+                && (!$0.hasLastKnownServerRecord
+                  || #sql("\($0.serverUserModificationTime) < \($0.userModificationTime)"))
+            }
             .update { $0.recordPrimaryKey = $0.recordPrimaryKey }
             .execute(db)
         }
