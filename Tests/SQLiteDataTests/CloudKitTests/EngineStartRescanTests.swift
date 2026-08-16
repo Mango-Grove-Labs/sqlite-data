@@ -40,6 +40,23 @@
         }
       }
 
+      /// Waits (bounded, quiet) for 5.3b's asynchronous ledger writes to land, so the restart
+      /// assertions below are deterministic — a persist racing past its ack-clear would otherwise
+      /// leave an orphan row that the start drain re-enqueues.
+      @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
+      private func settleLedger(at expected: Int) async throws {
+        for _ in 0..<200 {
+          let count = try await syncEngine.metadatabase.read { db in
+            try Int.fetchOne(
+              db,
+              sql: #"SELECT count(*) FROM "sqlitedata_icloud_pendingRecordZoneChanges""#
+            ) ?? -1
+          }
+          if count == expected { return }
+          try await Task.sleep(for: .milliseconds(10))
+        }
+      }
+
       /// The mirror and local stamps, read via SQL (never the archived record).
       @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
       private func stamps(id: Int) async throws -> (local: Int64, mirror: Int64?) {
@@ -111,13 +128,16 @@
         try await userDatabase.userWrite { db in
           try db.seed { RemindersList(id: 1, title: "Personal") }
         }
+        try await settleLedger(at: 1)
         try await syncEngine.processPendingRecordZoneChanges(scope: .private)
+        try await settleLedger(at: 0)
 
         // Row 2 becomes the slim-ack shape: confirmed (lastKnownServerRecord set) with a NULL
         // mirror, exactly what the F2 amendment leaves on a real device.
         try await userDatabase.userWrite { db in
           try db.seed { RemindersList(id: 2, title: "Work") }
         }
+        try await settleLedger(at: 1)
         let slimAck = CKRecord(
           recordType: RemindersList.tableName,
           recordID: RemindersList.recordID(for: 2)
@@ -126,6 +146,7 @@
           savedRecords: [slimAck],
           syncEngine: syncEngine.private
         )
+        try await settleLedger(at: 0)  // the slim ack is a sent outcome: it resolved row 2's ledger row
         let s = try await stamps(id: 2)
         #expect(s.mirror == nil)
         // Drain row 2's still-pending in-memory save so the restart starts from a clean set.

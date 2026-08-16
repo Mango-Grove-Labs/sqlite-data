@@ -88,3 +88,21 @@ every-start loop characterization (green either way; pins why 5.3a ships with pa
 Gotcha for 5.3b: the loop test's direct `metadatabase.write` produced NO spurious
 enqueue — the sync triggers live on the user connection, which 5.3b's ledger writes will
 need to account for. 2 new tests; full suite green ×2.
+
+## 2026-08-15 — 5.3b shipped: the always-on durable pending ledger — milestone re-closed
+
+The F10 crash window is closed at the mechanism: `didUpdate`/`didDelete` now persist
+every local change to the `PendingRecordZoneChange` table whether or not the engine runs
+(still a Task — the trigger can't write re-entrantly; upstream's own TODO), every sent
+outcome clears its rows (decode-matched; archiver blobs aren't byte-stable), the failure
+handlers' re-enqueues (patches 1/6) write through so the parks are crash-durable, the
+batch builder's drop-forever sites clear (else the start drain resurrects an absent
+record each launch), and upstream's start-time table wipe is REMOVED — rows persist
+until resolution; drain duplicates die in the engine state's set semantics.
+`DurablePendingLedgerTests`: all three red-verified pre-patch (killed slim-acked edit ·
+killed DELETE · clears-on-resolution). Patch 9's boundary test hardened with ledger
+settles (the async persist could race its own ack-clear in the mock's instant round
+trips). Known cost accepted: one small async write per changed row (noted in § 9).
+Full suite green ×2. Phase 5 complete again — milestone "Consumer-clearing patches
+done" re-closed; adoption = MonteSprout 48.3's single `/mango-update`, then 1.0(17) +
+the matrix re-run whose S5 step this whole phase exists for.

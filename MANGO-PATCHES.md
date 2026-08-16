@@ -39,8 +39,9 @@ Known limitations (accepted; observability planned in the consumer's MangoSync w
   unsynced drain sees `.unknownItem` for the parked ID (the record never reached the server) and
   clears the park row without re-enqueueing. The child is then local-only with no retry until a
   force-re-upload or account-change re-enqueue. Surface via sync-health trends, don't rely on
-  the park row as a durable retry ledger. *(Since patch 9, the engine-start rescan re-enqueues the
-  never-confirmed child at the next launch — the window now costs a relaunch, not a manual reupload.)*
+  the park row as a durable retry ledger. *(Since patch 9 the engine-start rescan re-enqueues the
+  never-confirmed child at the next launch, and since 5.3b the park's re-enqueued save also writes
+  through the always-on durable ledger — the window now costs a relaunch at most.)*
 
 ### 2. Report every silently-dropped failed SAVE with its CKError
 
@@ -242,11 +243,12 @@ Known limitations (accepted):
 
 - **A report per retry round.** While a transition lasts, each round that re-fails re-reports. That is
   the deliberate trade against patch 2's invisibility; triage on the wording, not the count.
-- **In-memory until serialized.** Same crash-window caveat as patch 1 — the re-enqueued change lives
-  in CKSyncEngine's state, so a process death before its next serialization loses the retry and the
-  row waits for a relaunch. *(The 1.0(16) matrix proved the relaunch did NOT heal on the 1.9 base —
-  that gap is what patch 9 closes: the engine-start rescan re-enqueues the stranded save; a stranded
-  transition-window DELETE remains out of its scope, § 9.)*
+- **In-memory until serialized — closed by 5.3b.** Originally: the re-enqueued change lived in
+  CKSyncEngine's state, so a process death before its next serialization lost the retry (the 1.0(16)
+  matrix proved the relaunch did NOT heal on the 1.9 base). Since 5.3b the park's re-enqueue writes
+  through the always-on durable ledger — save and delete halves both — and the start drain re-enqueues
+  it after any crash; § 9's rescan additionally covers the never-confirmed and stamped-mirror-behind
+  shapes.
 - **Neither half fixes the host's health signal.** The lingering "not syncing" line is a consumer
   concern (MonteSprout 41.1b), not something the library can clear.
 
@@ -358,29 +360,40 @@ userModificationTime`, patch 7's column — which is why this depends on the § 
 mirror would turn "targeted" into the blanket reupload the consumer explicitly ruled out, and a **NULL
 mirror is "unknown", never a trigger** — SQL's `NULL < x` semantics are load-bearing in the predicate).
 
-Deliberate scope bounds (accepted):
+Scope notes (the rescan's own bounds; both closed by the 5.3 follow-ups below):
 
-- **A stranded DELETE is not rescanned.** A locally-deleted row whose delete died with the process is
-  excluded (`NOT _isDeleted` — re-enqueueing it through the no-op-update idiom would emit a *save* and
-  resurrect the row). The next fetch round's record delivery or a relaunch-era delete re-issue does not
-  exist for this shape either; extend patch-9-style with a delete-aware re-enqueue if the fleet ever
-  shows it.
-- **The durable park (persisting the park at park time) remains optional hardening, not built** — the
-  rescan is the half that heals rows *already stranded in the field*, which a durable park cannot.
-  _Promoted to REQUIRED by consumer review (2026-08-15, Phase 5.3): the two bounds above sit exactly on
-  the consumer's S5 matrix step. Same review also found the **legacy `-1` sentinel loop** — pre-amendment
-  rows hold mirror `-1`, which this patch's predicate selects at every start while a slim ack never
-  repairs it: an upgraded device blanket-reuploads its whole dataset per launch. **Fixed 2026-08-15
-  (5.3a):** the metadatabase migration `"Mango: null the legacy -1 mirror sentinels"` (registered after
-  patch 7's, name byte-stable) nulls the junk at upgrade — honest unknown, preserving real stamps and
-  never-confirmed NULLs; guarded by `LegacySentinelMigrationTests` (a genuine pre-upgrade ledger built
-  via the migration-prefix `upTo:` test hook, red-verified without the migration 2026-08-15) plus the
-  every-start loop characterization. 5.3b (the **always-on** `PendingRecordZoneChange` ledger — a
-  park-time-only persistence could never catch a mid-flight force-quit — with patch-6 parks writing
-  through it) is still owed; this note rewrites again when it lands._
+- **The rescan itself never touches deletes** (`NOT _isDeleted` — its no-op-update idiom emits a *save*
+  per selected row; a tombstone would resurrect). A stranded DELETE is covered by the 5.3b ledger
+  instead.
 - **Mirror-behind is inert where acks stay slim.** On real CloudKit a confirmed row's mirror stays NULL
   (F2 amendment), so the mirror-behind half fires only where acks carry stamps; the never-confirmed half
-  is the field workhorse.
+  is the rescan's field workhorse — and the slim-acked-edit shape is covered by the 5.3b ledger.
+
+**5.3 follow-ups (both landed 2026-08-15, from the consumer review of this patch):**
+
+- **5.3a — the legacy `-1` sentinel loop.** Pre-amendment rows hold mirror `-1`, which this patch's
+  predicate selects at every start while a slim ack never repairs it: an upgraded device would
+  blanket-reupload its whole dataset per launch. Fixed by the metadatabase migration `"Mango: null the
+  legacy -1 mirror sentinels"` (registered after patch 7's, name byte-stable) — junk becomes honest
+  unknown, real stamps and never-confirmed NULLs untouched. Guarded by `LegacySentinelMigrationTests`
+  (a genuine pre-upgrade ledger built via the migration-prefix `upTo:` test hook, red-verified without
+  the migration) plus the every-start loop characterization.
+- **5.3b — the durable pending ledger is ALWAYS-ON.** Upstream wrote the `PendingRecordZoneChange`
+  table only while the engine was stopped and wiped it at every start after draining — so a change made
+  while running lived solely in CKSyncEngine's memory until its next serialization (the F10 window).
+  Now: `didUpdate`/`didDelete` persist on every local change (still via a Task — the trigger cannot
+  write re-entrantly from inside the user's transaction, so a crash before the Task lands degrades to
+  the old behavior, never worse) · every sent outcome clears its rows, matched by decoding (the archiver
+  blob is not byte-stable) · the failure handlers' re-enqueues (patches 1 and 6) write through, making
+  the parks crash-durable · the batch builder's drop-forever sites clear (an absent record must leave
+  the ledger too, or the start drain resurrects it each launch) · the start wipe is gone — rows persist
+  until resolution and the drain's duplicates are absorbed by the engine state's set semantics. The
+  fetch-side unsynced drain stays on `UnsyncedRecordID` (already durable, deliberately not duplicated).
+  Guarded by `DurablePendingLedgerTests`, kill-restart-shaped for both S5 shapes the rescan cannot see
+  (a killed edit on a slim-acked NULL-mirror row · a killed DELETE) plus the clears-on-resolution
+  lifecycle contract. Known cost (accepted): the persist runs one small async write per changed row,
+  so a bulk operation (a wide cascade delete) pays a burst of tiny ledger writes that upstream paid
+  only while stopped — batching this into the trigger itself is upstream's own standing TODO.
 
 - **`EngineStartRescanTests`** — pins the patched contract kill-restart-shaped (`stop()` discards the
   engines and their in-memory pending state, the same loss a force-quit produces, while the durable
@@ -481,7 +494,9 @@ nothing newer to move to.
    (the engine-start targeted rescan — `enqueueStrandedRecordsForCloudKit` + its `start()` call
    site)**, **the 5.3a sentinel-nulling migration commit (metadatabase schema — keep its migration
    registered after patch 7's, name byte-stable; also carries the `package`/`upTo:` migrate hook its
-   test needs)**, the test
+   test needs)**, **the 5.3b always-on-ledger commit (didUpdate/didDelete persist + the
+   handleSentRecordZoneChanges clears + the batch-builder clears + the removed start wipe — the wipe
+   removal is the piece a conflict resolved by taking upstream silently reverts)**, the test
    commits (take them from the tip of the previous `mango/patches-*` branch). Resolve conflicts by **idiom, not line
    number** — the `SyncEngine` error-handling region drifts. Patch 3 conflicts every time, because the
    rebase re-inherits upstream's `from:` declaration — take **ours**, retuned to the new base tag's
@@ -527,6 +542,10 @@ nothing newer to move to.
      `theUpgradeNullsLegacySentinelsAndPreservesRealStamps` (the `-1` survives the upgrade); restore
      → green. The loop characterization (`aLegacySentinelLoopsTheRescanOnEveryStart`) stays green
      either way — it pins the mechanism, not the fix.
+   - `git revert --no-commit <5.3b sha>` → `swift test --filter DurablePendingLedgerTests` must go
+     **red** on all three tests (`aKilledEditOnASlimAckedRowIsReEnqueuedAtStart`,
+     `aKilledDeleteIsReEnqueuedAtStart`, `theLedgerClearsOnResolution` — the ledger is never written
+     while the engine runs); `git reset --hard` → green.
 
    A rebase that skips these can silently drop a guard.
 5. **Manifest check (required):** confirm `Package.swift` still carries an `.upToNextMinor`
