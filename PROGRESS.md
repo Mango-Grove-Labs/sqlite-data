@@ -33,7 +33,7 @@
   - [x] 3.1 Rebase the stack as `mango/patches-1.9` (consumer branch)
   - [x] 3.2 Patch 4 — a failed CKAsset download parks for retry, never writes NULL
 - [ ] **Phase 4 — Open library work**
-  - [ ] 4.1 Bound the remaining unbounded `from:` ranges in `Package.swift` (GRDB is the largest gap) — owed per `MANGO-PATCHES.md` § patch 3; full suite twice
+  - [ ] 4.1 Bound the remaining unbounded `from:` ranges in `Package.swift` (GRDB is the largest gap) — owed per `MANGO-PATCHES.md` § patch 3; full suite twice _(the `Package@swift-6.0.swift` structured-queries half landed with patch 10 on 2026-08-15; GRDB and the rest still open)_
   - [ ] 4.2 Patch 8 — a failed metadata read in `nextRecordZoneChangeBatch` parks/retries; only a genuinely absent record leaves the queue (`MANGO-PATCHES.md` § 8)
   - [ ] 4.3 `tearDownSyncEngine` drops triggers with `drop(ifExists: true)` so a failed `deleteLocalData()` clear is retryable in-process (`MANGO-PATCHES.md` § patch 5 known limitation)
 - [ ] 🏁 **MILESTONE: Open patch work done** ← stop for review
@@ -43,24 +43,30 @@
   - [x] 5.3a migration nulling the legacy `-1` mirror sentinels — upgraded-ledger test red-verified via the new migration-prefix `upTo:` hook [model: fable]
   - [x] 5.3b always-on durable pending ledger — kill-restart guards red-verified for both S5 shapes; start wipe removed, clears on resolution [model: fable]
 - [x] 🏁 **MILESTONE: Consumer-clearing patches done** ← stop; MonteSprout adopts ALL Phase-5 work in ONE `/mango-update` (its 48.3), then cuts 1.0(17)
+- [x] **Phase 6 — Patch 10, from the review of the 1.10.0 retarget** _(the two `AccountLifecycleTests` failures the retarget recorded as "pre-existing and unexplained" were 5.3b's own; root-caused in review, not by a new report)_
+  - [x] 6.1 Patch 10 — metadatabase lock contention is waited out, never fatal (busy-mode inheritance + bounded ledger-write retries), and the guards + rebase procedure that let it hide
 
 ---
 
 ## Current Status
 
-- **Current phase / sub-phase:** Phase 5 complete — milestone "Consumer-clearing patches done" reached (second closing, after the 5.3 re-open)
+- **Current phase / sub-phase:** Phase 6 complete — patch 10 landed on `mango/patches-1.9` and cherry-picked to `mango/patches-1.10`
 - **State:** milestone-reached (stop for human review + consumer adoption)
-- **Last completed:** 5.3b — the always-on durable pending ledger (all three guards red-verified pre-patch; full suite green twice, 2026-08-15)
-- **Build:** green · **Tests:** green (2026-08-15) · **Simulator-verified:** n/a
+- **Last completed:** 6.1 — patch 10, metadatabase lock contention (busy-mode inheritance + bounded ledger-write retries); the four `MetadatabaseBusyModeTests` guards red-verified pre-patch
+- **Build:** green · **Tests:** green — **332 tests, ZERO failures, four consecutive full runs** (2026-08-15). The two `AccountLifecycleTests` failures that stood since 5.3b are gone; the suite is honestly green for the first time since 2026-08-15's ledger work · **Simulator-verified:** n/a
 
 ---
 
 ## Next Concrete Action
 
 > Milestone reached (second closing) — stop for human review; no in-repo work until then.
-> Adoption is owned by the consumer: MonteSprout 48.3 runs ONE `/mango-update` pin bump (all Phase-5
-> work — 5.1, 5.2, 5.3a, 5.3b — same revision + SSH URL in every Mango app), then cuts 1.0(17) and
-> re-runs its device matrix, including the S5 step the ledger exists for.
+> Adoption is owned by the consumer, and the pin to adopt now includes **patch 10**: MangoSync moves its
+> declared `revision:` to this branch's tip first, then MonteSprout 48.3 runs ONE `/mango-update` pin
+> bump (Phase-5 work — 5.1, 5.2, 5.3a, 5.3b — plus patch 10, same revision + SSH URL in every Mango
+> app), then cuts 1.0(17) and re-runs its device matrix, including the S5 step the ledger exists for.
+> **Do not ship 1.0(17) off a pre-patch-10 revision:** 5.3b's ledger write goes through the host's
+> connection, and without patch 10 a contended write is swallowed — the durability the matrix is meant
+> to verify would be silently absent under exactly the bulk-write conditions it tests.
 > After review, resume with 4.1: bound the remaining unbounded `from:` ranges in `Package.swift` (and
 > `Package@swift-6.0.swift`) to the minors the 1.9.0 base tag's own `Package.resolved` pins (GRDB
 > first: declared `from: "7.6.0"`, resolves 7.11.0), per the patch-3 rationale; full suite twice;

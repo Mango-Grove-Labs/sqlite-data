@@ -28,7 +28,14 @@ let package = Package(
     .package(url: "https://github.com/pointfreeco/swift-dependencies", from: "1.9.0"),
     .package(url: "https://github.com/pointfreeco/swift-sharing", from: "2.3.0"),
     .package(url: "https://github.com/pointfreeco/swift-snapshot-testing", from: "1.18.4"),
-    .package(url: "https://github.com/pointfreeco/swift-structured-queries", from: "0.35.0"),
+    // MANGO PATCH 3, applied here too. This fallback manifest is inert on a 6.1+ toolchain (which is
+    // what this fork and every consumer build with), but an unbounded `from:` is the same hole that
+    // produced the 1.0(12) sync outage — full rationale in `Package.swift`. Keep the bound in lockstep
+    // with the live manifest's at every rebase.
+    .package(
+      url: "https://github.com/pointfreeco/swift-structured-queries",
+      .upToNextMinor(from: "0.35.0")
+    ),
     .package(url: "https://github.com/pointfreeco/xctest-dynamic-overlay", from: "1.5.0"),
   ],
   targets: [

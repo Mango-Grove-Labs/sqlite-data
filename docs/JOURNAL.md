@@ -106,3 +106,45 @@ trips). Known cost accepted: one small async write per changed row (noted in § 
 Full suite green ×2. Phase 5 complete again — milestone "Consumer-clearing patches
 done" re-closed; adoption = MonteSprout 48.3's single `/mango-update`, then 1.0(17) +
 the matrix re-run whose S5 step this whole phase exists for.
+
+## 2026-08-15 — Patch 10: the metadatabase must wait for a lock (a review finding, not a report)
+
+Found reviewing the 1.10.0 retarget, chasing the one thing it left open: the two
+`AccountLifecycleTests` failures it recorded as "pre-existing and unexplained". They are
+neither. Both pass on a clean checkout of tag 1.10.0 and pass again when only the 5.3b
+commit is reverted at the branch tip — so they are ours, one commit old. "Pre-existing on
+the previous branch" had been read as "upstream's"; the distinguishing run (against the
+clean base tag) is now step 4b of the rebase procedure.
+
+The mechanism, from the actual failure text (`SQLite error 5: database is locked - while
+executing BEGIN IMMEDIATE TRANSACTION`, later at `SyncEngine.swift:669`, inside the
+persist's own `withErrorReporting`): the metadatabase file has two writers — the library's
+connection and the host's, via the attached `sqlitedata_icloud` schema — and 5.3b turned
+host-side writes there from rare into every-local-change. Neither side could survive that.
+`defaultMetadatabase` builds from a fresh `Configuration()`, keeping GRDB's default
+`busyMode = .immediateError`, and the ledger writes ride the host's connection, whose busy
+behavior the library doesn't own. Either failure is swallowed by `withErrorReporting`, so
+the row silently loses the durability 5.3b exists to provide — the pre-5.3b behavior patch
+9's F10 fix was written to prevent, plus one reported issue per occurrence.
+
+Patch 10 fixes both halves from one new Mango-owned file
+(`CloudKit/Internal/MetadatabaseBusyMode.swift`, so upstream files carry three one-line call
+sites): inherit the host's busy mode and upgrade only `.immediateError` to `.timeout(5)`;
+and bounded 25/50/100 ms retries around the persist and the clear, for
+`SQLITE_BUSY`/`SQLITE_LOCKED` only. The retry sleeps use `Task.sleep`, not
+`\.continuousClock` — the suite injects a `TestClock` nothing advances, which would hang
+rather than retry. Fixing the first half alone made the second half fail *more* (a waiting
+connection takes the lock instead of giving it up), which is how the host-side half surfaced.
+
+Guards: `MetadatabaseBusyModeTests` (decision · that waiting actually happens, via a
+250 ms held write lock · the wiring through a real engine) — three of four red when the
+busy-mode helper is neutralized, the inheritance test green by construction. The two
+`AccountLifecycleTests` are the end-to-end guard. Suite: **332 tests, zero failures, four
+consecutive full runs** — honestly green for the first time since 5.3b landed.
+
+Carried in the same commit, both from the same review: `Package@swift-6.0.swift` gets patch
+3's bound (unbounded for the whole 1.9 line — inert on 6.1+ toolchains, but the identical
+hole, and step 5 now checks both manifests), and the rebase procedure gains the two rules
+this episode cost us — run guards at the tip only (the stack is not buildable
+commit-by-commit: patch 3 replays with the previous base's bound), and an unexplained
+failure is a finding, not a baseline.

@@ -93,6 +93,12 @@ the one sitting closest to the storage layer. Nothing has gone wrong there; the 
 nothing would tell us if it did. (Tracked as item 8 of the MonteSprout incident, but the work
 happens in this repo.)
 
+**`Package@swift-6.0.swift` now carries the bound too** (2026-08-15). Patch 3 had only ever touched
+`Package.swift`, leaving the 6.0 fallback manifest declaring `swift-structured-queries` as a bare
+`from:` for the whole 1.9 line. It is inert on a 6.1+ toolchain — what this fork and every consumer
+build with — so it was never a live exposure, but it is the identical hole and nothing was watching it.
+Step 5 of the rebase procedure now checks both manifests.
+
 ### 4. A failed `CKAsset` download must be parked for retry, never written as `NULL`
 
 *MonteSprout, observed 2026-07-19 (Sentry 7619718981); mechanism traced Phase 45.4; implemented
@@ -403,6 +409,61 @@ Scope notes (the rescan's own bounds; both closed by the 5.3 follow-ups below):
   Reverting the patch sends the two rescan tests red (verified 2026-08-15) and leaves the boundary test
   green.
 
+### 10. Lock contention on the metadatabase must be waited out, never fatal
+
+*Found reviewing the 1.10.0 retarget (2026-08-15); implemented the same day on `mango/patches-1.9`.
+It is the fix for the two `AccountLifecycleTests` failures 5.3b left behind and the retarget recorded
+as "pre-existing and unexplained".*
+
+The metadatabase file has **two writers**: the library's own connection (`defaultMetadatabase`) and the
+host's connection, which reaches the same file through the attached `sqlitedata_icloud` schema. Before
+5.3b the host side wrote there rarely; **since 5.3b it writes on every local change** — the always-on
+pending ledger runs through `userDatabase.write` — so the two contend routinely rather than never.
+
+Neither side was set up to survive that:
+
+- **The library's connection** is built from a fresh `Configuration()`, which copies only
+  `observesSuspensionNotifications` from the host's and therefore leaves GRDB's default
+  `busyMode = .immediateError` in place. A few milliseconds of ordinary contention became an outright
+  `SQLITE_BUSY`.
+- **The ledger writes** go through the host's connection, whose busy behavior the library does not own.
+  A host that never hardened it (upstream's default; MangoSync hardens to `.timeout(5)`) fails
+  instantly — and the first fix makes that *more* likely, because the library's connection now waits
+  for the lock and then takes it instead of giving up.
+
+Either failure is swallowed by the `withErrorReporting` around the persist, so the row silently loses
+the durability 5.3b exists to give it — degrading to exactly the pre-5.3b behavior patch 9's F10 fix
+was written to prevent — plus one reported issue per occurrence in the host's telemetry.
+
+The patch, both halves in `CloudKit/Internal/MetadatabaseBusyMode.swift` (a **new Mango-owned file**, so
+the cost inside upstream's own files is one line at each of three call sites):
+
+- `mangoMetadatabaseBusyMode(inheriting:)` — inherit whatever the host chose (a `.timeout`, or a
+  `.callback` the host means), and upgrade only the `.immediateError` default to `.timeout(5)`. An
+  internal database the library solely owns has no reason to prefer an instant failure to a bounded wait.
+- `mangoRetryingTransientContention(_:)` — bounded retries (25/50/100 ms) around the persist and the
+  clear, for `SQLITE_BUSY`/`SQLITE_LOCKED` only; anything else rethrows immediately. Mirrors the
+  host-side idiom in MangoSync's `Fetch.loadRetrying`. The sleeps use `Task.sleep`, **not**
+  `\.continuousClock` — this runs inside the library's own persist `Task` and the suite injects a
+  `TestClock` that nothing advances, so riding that clock would hang the suite instead of retrying.
+
+Known limitation (accepted): retries are bounded, so a pathologically long writer still ends in the
+swallowed-failure path. That is the pre-existing behavior, not a new one.
+
+- **`MetadatabaseBusyModeTests`** — pins the decision (default upgraded, host's own choice inherited
+  verbatim), that waiting *actually happens* (a second connection holds the write lock for 250 ms and
+  the metadatabase write survives it), and the wiring (an engine built the ordinary way ends up with a
+  waiting connection). Neutralizing `mangoMetadatabaseBusyMode` to return its argument sends three of
+  the four red; the inheritance test stays green by construction.
+- **`AccountLifecycleTests.signInUploadsLocalRecordsToCloudKit_SkipExistingCloudKitRecords`** and
+  **`createSharedRecordWhileSoftLoggedOut`** are the end-to-end guard: they fail with
+  `SQLite error 5: database is locked` on the 5.3b base and pass with this patch. Their history is the
+  reason the rebase procedure now says an unexplained failure is a finding, not a baseline: they were
+  first recorded as "pre-existing, fails the same way on the previous branch" — true, and misleading,
+  because 5.3b had introduced them one commit earlier. **A failure that also fails on the previous
+  branch is pre-existing; that is not the same as being upstream's.** Running them against a clean
+  checkout of the base tag (where they pass) is what separates the two.
+
 ### Characterization — what a "waiting to upload" count derived from `lastKnownServerRecord` cannot see
 
 *MonteSprout Phase 41.2a — no library change; a pinned fact consumers build on.*
@@ -496,7 +557,10 @@ nothing newer to move to.
    registered after patch 7's, name byte-stable; also carries the `package`/`upTo:` migrate hook its
    test needs)**, **the 5.3b always-on-ledger commit (didUpdate/didDelete persist + the
    handleSentRecordZoneChanges clears + the batch-builder clears + the removed start wipe — the wipe
-   removal is the piece a conflict resolved by taking upstream silently reverts)**, the test
+   removal is the piece a conflict resolved by taking upstream silently reverts)**, **patch 10 (the
+   metadatabase busy mode + the ledger-write retries — its logic lives in the Mango-owned
+   `CloudKit/Internal/MetadatabaseBusyMode.swift`, so only the three one-line call sites can conflict)**,
+   the test
    commits (take them from the tip of the previous `mango/patches-*` branch). Resolve conflicts by **idiom, not line
    number** — the `SyncEngine` error-handling region drifts. Patch 3 conflicts every time, because the
    rebase re-inherits upstream's `from:` declaration — take **ours**, retuned to the new base tag's
@@ -547,12 +611,37 @@ nothing newer to move to.
      `aKilledDeleteIsReEnqueuedAtStart`, `theLedgerClearsOnResolution` — the ledger is never written
      while the engine runs); `git reset --hard` → green.
 
+   - Neutralize `mangoMetadatabaseBusyMode` to `return hostBusyMode` (a bare revert of patch 10 also
+     deletes its test file) → `swift test --filter MetadatabaseBusyMode` must go **red** on
+     `aDefaultHostConfigurationStillGetsABoundedBusyTimeout`,
+     `aHeldWriteLockIsWaitedOutRatherThanFailingImmediately` and
+     `theEnginesMetadatabaseConnectionWaitsForALock`, while `theHostsOwnBusyTimeoutIsInheritedVerbatim`
+     stays green (it pins the other half); restore → green.
+
    A rebase that skips these can silently drop a guard.
-5. **Manifest check (required):** confirm `Package.swift` still carries an `.upToNextMinor`
+
+   ⚠️ **Run every guard at the branch TIP, by neutralizing the mechanism in place — never by checking
+   out a mid-stack commit.** The stack is not buildable commit-by-commit: patch 3 replays with the
+   *previous* base's bound and is only retuned in the final commit (step 5), so every intermediate
+   commit resolves a `swift-structured-queries` minor the new base's source does not compile against.
+   Bisecting the stack fails at the compiler, not at a test.
+4b. **Baseline the suite on the previous branch — and prove a "pre-existing" failure is upstream's.**
+   Run the full suite on the outgoing `mango/patches-*` branch and diff the failure lists; a failure
+   present on both is pre-existing. **Pre-existing is not the same as upstream's** — it only means the
+   cause landed before this rebase, which includes our own last patch. Run any such failure against a
+   **clean checkout of the base tag**: if it passes there, it is ours, and it is a finding, not a
+   baseline. That distinction is exactly what the 1.10.0 retarget got wrong (the two
+   `AccountLifecycleTests` failures were 5.3b's, one commit old — now fixed by patch 10), and it is
+   what proved `TriggerTests.triggers()` genuinely *was* upstream's stale snapshot.
+5. **Manifest check (required):** confirm **both** `Package.swift` **and** `Package@swift-6.0.swift`
+   still carry an `.upToNextMinor`
    bound for `swift-structured-queries` matching the base tag's own `Package.resolved` pin
    (currently `.upToNextMinor(from: "0.35.0")` on `mango/patches-1.9`) — the new upstream tag's
    tested minor, not the previous branch's literal. **No test can catch a
    dropped patch 3**: the suite resolves via this repo's own `Package.resolved` and stays green on
-   any version, which is exactly how the original outage reached the field. Check it by eye.
-6. Full `swift test` green (known-intermittent issues aside), twice.
+   any version, which is exactly how the original outage reached the field. Check it by eye. (The 6.0
+   fallback manifest is inert on a 6.1+ toolchain, but it is the same hole and drifts silently — it
+   spent the whole 1.9 line unbounded before anyone looked.)
+6. Full `swift test` green (known-intermittent issues aside), twice. "Green" means no unexplained
+   failure — see 4b before writing one off.
 7. Push the branch; update consumers' `Package.swift` `revision:` pins in lockstep.

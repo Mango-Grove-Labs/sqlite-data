@@ -666,11 +666,15 @@
       _ changes: [CKSyncEngine.PendingRecordZoneChange]
     ) async {
       guard !changes.isEmpty else { return }
+      // MANGO PATCH 10 — a `SQLITE_BUSY` here would be swallowed below and silently cost this row its
+      // durability. See `mangoRetryingTransientContention`.
       await withErrorReporting(.sqliteDataCloudKitFailure) {
-        try await userDatabase.write { db in
-          try PendingRecordZoneChange
-            .insert { changes.map { PendingRecordZoneChange($0) } }
-            .execute(db)
+        try await mangoRetryingTransientContention {
+          try await userDatabase.write { db in
+            try PendingRecordZoneChange
+              .insert { changes.map { PendingRecordZoneChange($0) } }
+              .execute(db)
+          }
         }
       }
     }
@@ -680,33 +684,37 @@
     ) async {
       guard !changes.isEmpty else { return }
       let targets = Set(changes)
+      // MANGO PATCH 10 — same contention class as the persist above; a swallowed failure here leaves
+      // resolved rows in the ledger for the next start drain to re-enqueue.
       await withErrorReporting(.sqliteDataCloudKitFailure) {
-        try await userDatabase.write { db in
-          let rows = try GRDB.Row.fetchAll(
-            db,
-            sql: """
-              SELECT rowid, "pendingRecordZoneChange"
-                FROM "\(String.sqliteDataCloudKitSchemaName)_pendingRecordZoneChanges"
-              """
-          )
-          let matched = rows.compactMap { row -> Int64? in
-            guard
-              let data = row["pendingRecordZoneChange"] as Data?,
-              let change = CKSyncEngine.PendingRecordZoneChange.DataRepresentation(
-                queryBinding: .blob([UInt8](data))
-              ),
-              targets.contains(change.queryOutput)
-            else { return nil }
-            return row["rowid"] as Int64?
-          }
-          for rowid in matched {
-            try db.execute(
+        try await mangoRetryingTransientContention {
+          try await userDatabase.write { db in
+            let rows = try GRDB.Row.fetchAll(
+              db,
               sql: """
-                DELETE FROM "\(String.sqliteDataCloudKitSchemaName)_pendingRecordZoneChanges"
-                 WHERE rowid = ?
-                """,
-              arguments: [rowid]
+                SELECT rowid, "pendingRecordZoneChange"
+                  FROM "\(String.sqliteDataCloudKitSchemaName)_pendingRecordZoneChanges"
+                """
             )
+            let matched = rows.compactMap { row -> Int64? in
+              guard
+                let data = row["pendingRecordZoneChange"] as Data?,
+                let change = CKSyncEngine.PendingRecordZoneChange.DataRepresentation(
+                  queryBinding: .blob([UInt8](data))
+                ),
+                targets.contains(change.queryOutput)
+              else { return nil }
+              return row["rowid"] as Int64?
+            }
+            for rowid in matched {
+              try db.execute(
+                sql: """
+                  DELETE FROM "\(String.sqliteDataCloudKitSchemaName)_pendingRecordZoneChanges"
+                   WHERE rowid = ?
+                  """,
+                arguments: [rowid]
+              )
+            }
           }
         }
       }
