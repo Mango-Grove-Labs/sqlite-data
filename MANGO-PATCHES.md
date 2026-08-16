@@ -367,6 +367,13 @@ Deliberate scope bounds (accepted):
   shows it.
 - **The durable park (persisting the park at park time) remains optional hardening, not built** — the
   rescan is the half that heals rows *already stranded in the field*, which a durable park cannot.
+  _Promoted to REQUIRED by consumer review (2026-08-15, Phase 5.3): the two bounds above sit exactly on
+  the consumer's S5 matrix step. Same review also found the **legacy `-1` sentinel loop** — pre-amendment
+  rows hold mirror `-1`, which this patch's predicate selects at every start while a slim ack never
+  repairs it: an upgraded device blanket-reuploads its whole dataset per launch. 5.3a ships the nulling
+  migration; 5.3b makes the durable `PendingRecordZoneChange` ledger **always-on** (a park-time-only
+  persistence could never catch a mid-flight force-quit — the change is in no park handler's hands),
+  with patch-6 parks writing through it; this note rewrites when they land._
 - **Mirror-behind is inert where acks stay slim.** On real CloudKit a confirmed row's mirror stays NULL
   (F2 amendment), so the mirror-behind half fires only where acks carry stamps; the never-confirmed half
   is the field workhorse.

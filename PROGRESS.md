@@ -1,8 +1,8 @@
 # Project Progress
 
 - **Project:** sqlite-data (Mango fork of pointfreeco/sqlite-data)
-- **Target milestone:** Consumer-clearing patches done — reached; stop for review (then Phase 4 → "Open patch work done")
-- **Status:** `milestone-reached`
+- **Target milestone:** Consumer-clearing patches done — **re-opened by consumer review 2026-08-15**: 5.3 added (legacy `-1` mirror loop = adoption blocker; durable park = the S5-edit gap)
+- **Status:** `in-progress`
 - **Updated:** 2026-08-15
 
 ---
@@ -40,14 +40,19 @@
 - [ ] **Phase 5 — Consumer fix round: the 1.0(16) matrix findings (F2 + F10)** _(jumps the queue ahead of Phase 4 — release-blocking for MonteSprout; evidence: the consumer's `docs/incidents/2026-08-15-device-matrix-1.0.16.md`; scope prose: `MANGO-PATCHES.md` § 7 defect note + § 9 Planned)_
   - [x] 5.1 Patch 7 amendment — F2: slim-ack `?? -1` mirror false-positive → reproduced red first, then guarded (a stampless ack leaves the mirror untouched) [model: fable]
   - [x] 5.2 Patch 9 — F10: engine-start targeted rescan (never-confirmed + mirror-behind; stranded DELETEs deliberately out of scope) [model: fable]
-- [x] 🏁 **MILESTONE: Consumer-clearing patches done** ← stop; MonteSprout adopts both in ONE `/mango-update` (its 48.3), then cuts 1.0(17)
+  - [ ] 5.3a migration nulling the legacy `-1` mirror sentinels — the every-start reupload loop on upgraded devices; the adoption blocker; red-first upgraded-ledger test (rationale → DECISIONS § consumer review) [model: fable]
+  - [ ] 5.3b always-on durable pending ledger — `didUpdate`/`didDelete` write `PendingRecordZoneChange` while running too; sends/acks clear; the existing start drain re-enqueues; patch-6 parks write through — covers the stranded-edit + stranded-DELETE shapes [model: fable]
+- [ ] 🏁 **MILESTONE: Consumer-clearing patches done** ← stop; MonteSprout adopts ALL Phase-5 work in ONE `/mango-update` (its 48.3), then cuts 1.0(17)
 
 ---
 
 ## Current Status
 
-- **Current phase / sub-phase:** Phase 5 complete — milestone "Consumer-clearing patches done" reached
-- **State:** milestone-reached (stop for human review + consumer adoption)
+- **Current phase / sub-phase:** 5.3a — the `-1` sentinel-nulling migration
+- **State:** not-started. 5.1/5.2 reviewed and approved 2026-08-15 (both suites re-run green by the
+  reviewer); the review's two adoption blockers are now 5.3a (the `-1` sentinel loop) and 5.3b (the
+  always-on durable pending ledger — plan review corrected the mechanism from "park at park time",
+  which could never catch a mid-flight force-quit, to the ledger; DECISIONS § 5.3 refinement)
 - **Last completed:** 5.2 — Patch 9, engine-start targeted rescan (kill-restart guard red-verified pre-patch; full suite green twice, 2026-08-15)
 - **Build:** green · **Tests:** green (2026-08-15) · **Simulator-verified:** n/a
 
@@ -55,14 +60,19 @@
 
 ## Next Concrete Action
 
-> Milestone reached — stop for human review; no in-repo work until then.
-> Adoption is owned by the consumer: MonteSprout 48.3 runs ONE `/mango-update` pin bump (both Phase-5
-> patches together, same revision + SSH URL in every Mango app), then cuts 1.0(17) and re-runs its
-> device matrix.
-> After review, resume with 4.1: bound the remaining unbounded `from:` ranges in `Package.swift` (and
-> `Package@swift-6.0.swift`) to the minors the 1.9.0 base tag's own `Package.resolved` pins (GRDB
-> first: declared `from: "7.6.0"`, resolves 7.11.0), per the patch-3 rationale; full suite twice;
-> update `MANGO-PATCHES.md` § patch 3 "Owed".
+> Implement 5.3a (⚠ [model: fable]) — the adoption blocker: new metadatabase migration (append-only
+> discipline, name byte-stable, registered after patch 7's — its § rebase note applies): `UPDATE … SET
+> "serverUserModificationTime" = NULL WHERE "serverUserModificationTime" = -1` (junk → honest unknown;
+> `-1` is the pre-amendment getter fallback, never a real epoch-ns stamp). Red-first: an
+> upgraded-ledger test seeding a confirmed row with mirror `-1` must show patch 9 re-enqueueing it at
+> EVERY start pre-migration (the loop) and leaving it untouched post-migration. Full suite twice.
+> Then 5.3b: make the durable `PendingRecordZoneChange` ledger **always-on** — `didUpdate`/`didDelete`
+> write it while the engine runs too (today: only when stopped), sends/acks clear rows, the existing
+> start drain re-enqueues, and patch-6 parks write through it. Red-first kill-restart tests for BOTH
+> S5 shapes (stranded edit on a slim-acked NULL-mirror row · stranded DELETE); patch 9's boundary test
+> stays green (no blanket). Full suite twice; MANGO-PATCHES § 6/§ 9 updated; then the milestone
+> re-closes and MonteSprout 48.3 adopts everything in ONE `/mango-update`.
+> _(Phase 4 resumes after Phase 5, starting at 4.1 — bound the unbounded ranges, GRDB first.)_
 
 ---
 
@@ -71,7 +81,7 @@
 - **What fills OVERVIEW/architecture/ROADMAP in a fork repo** → chose **`MANGO-PATCHES.md` stays the single intact reference doc** → DECISIONS.md § 2026-08-15 — /adopt: fork-shaped doc contract
 - **Monorepo surface layout** → chose **waived — the upstream-shaped tree is load-bearing for rebases** → DECISIONS.md § 2026-08-15 — /adopt: fork-shaped doc contract
 - **PRD** → chose **placeholder pointing at the MANGO-PATCHES preamble + consumer incident records** → DECISIONS.md § 2026-08-15 — /adopt: fork-shaped doc contract
-- **Stranded DELETEs excluded from the start rescan** → chose **live rows only; extend patch-9-style if the fleet shows the delete shape** → DECISIONS.md § 2026-08-15 — 5.2: stranded deletes stay out of the start rescan
+- **Stranded DELETEs excluded from the start rescan** → chose **live rows only** (stands for the rescan predicate; the delete shape is covered at write time by 5.3b's ledger instead) → DECISIONS.md § 2026-08-15 — 5.2: stranded deletes stay out of the start rescan
 
 ---
 

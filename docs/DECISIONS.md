@@ -61,3 +61,37 @@ directly) and no fleet evidence shows the shape yet, so it stays out of the targ
 Reversal: extend patch-9-style when evidence arrives (noted in `MANGO-PATCHES.md` § 9 scope bounds).
 Also deliberately not built: the durable park (optional hardening per the plan) — the rescan alone
 heals rows already stranded in the field, which the park cannot.
+
+## 2026-08-15 — Consumer review of 5.1/5.2: approved, and Phase 5 re-opened for 5.3
+
+Reviewed from the consumer side (MonteSprout session; both new suites re-run green here). 5.1 approved
+outright — the amendment even covers a mechanism the plan missed (a slim re-ack stomping a
+previously-correct stamp). 5.2 approved as scoped. Two findings promoted into a new 5.3, blocking
+adoption:
+
+1. **The legacy `-1` sentinel loop (adoption blocker, found in review).** Every row uploaded under
+   pre-amendment code holds mirror `-1` on disk. Patch 9 selects `-1 < local` at every start, and the
+   amended ack path (correctly) never rewrites a slim ack's mirror — so an UPGRADED device re-enqueues
+   its entire pre-fix dataset on EVERY launch, forever: a permanent de-facto blanket reupload (blobs
+   included) arriving through the back door of two individually-correct patches. Fix: a one-time
+   metadatabase migration nulling `-1` mirrors — junk becomes honest unknown; `-1` cannot be a
+   legitimate epoch-ns stamp. Composition-of-patches lesson: each patch's tests passed; only walking an
+   upgraded ledger through both showed it.
+2. **The durable park graduates from "optional hardening" to required.** § 9's accepted scope bounds
+   (stranded edit on a slim-acked NULL-mirror row; stranded DELETE) sit exactly on the consumer's S5
+   matrix step — the gate probes that shape by design, so shipping the gap risks failing the build-17
+   matrix and burning a build number + a hardware day. Owner call (consumer session, 2026-08-15):
+   build 5.3 before adoption rather than letting the matrix decide.
+
+## 2026-08-15 — 5.3 refinement (fork-side plan review): the mechanism is the always-on ledger
+
+The review round's "durable park persists at park time" could never pass its own promised test: a
+mid-flight force-quit (the S5 stranded-edit shape) goes through no park handler — the pending save
+exists only in CKSyncEngine's in-memory state, so a park-time hook never sees it. The mechanism is
+therefore the **always-on durable pending ledger**: `didUpdate`/`didDelete` write the existing
+`PendingRecordZoneChange` table while the engine runs too (upstream writes it only while stopped),
+sends/acks clear rows, the existing start drain re-enqueues, and patch-6 parks write through it —
+one mechanism covering the stranded edit, the stranded DELETE, and the park crash-window at once.
+Also split for sizing: 5.3a (the `-1` sentinel migration, the adoption blocker) and 5.3b (the
+ledger) are separate session-sized slices; the stranded-DELETE rescan exclusion (§ 5.2 entry)
+stands for the rescan predicate itself.
