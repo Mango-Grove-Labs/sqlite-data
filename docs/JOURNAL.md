@@ -197,3 +197,27 @@ hole, and step 5 now checks both manifests), and the rebase procedure gains the 
 this episode cost us — run guards at the tip only (the stack is not buildable
 commit-by-commit: patch 3 replays with the previous base's bound), and an unexplained
 failure is a finding, not a baseline.
+
+## 2026-08-16 — Adoption settled: the consumer base is `mango/patches-1.10` @ `e18249a`
+
+Closes the base question Phase 6 left open. Decided by action rather than deliberation: MangoSync
+0.7.2 pins `mango/patches-1.10` @ `e18249a`, and every Mango app was bumped in lockstep to that same
+revision and SSH URL, as § Consumer rule requires (a mismatched revision *or* URL form anywhere in one
+SPM graph fails resolution outright).
+
+This overtook the recommendation recorded a day earlier, which was to ship 1.0(17) off `mango/patches-1.9`
+and take 1.10.0 as a separate later bump. Worth recording *why the recommendation was not load-bearing*:
+it rested on 1.10 being the bigger consumer change, which is still true — 1.0(17) now also takes
+upstream's `@FetchOne` auto-observation and `StrictDecoding` trait — but not on patch 10, which landed
+on **both** bases (`mango/patches-1.9` @ `869c362`, `mango/patches-1.10` @ `e18249a`). A draft of this
+state file claimed 1.10 was "the only base carrying patch 10"; it was not, and the claim was corrected
+in review before it could mislead a future pin decision.
+
+Also closed here: the two `AccountLifecycleTests` failures that Phase 6 committed as "pre-existing and
+unexplained". They were neither upstream's nor the retarget's — they were 5.3b's own metadatabase lock
+contention, root-caused and fixed by patch 10 (§ 10; its own journal entry carries the mechanism).
+Consumer re-verified 2026-08-16: full suite ×2, zero failures.
+
+Still outstanding, and the reason the Phase-5 milestone stays provisional: the 1.0(17) **device-matrix
+re-run on hardware**, including the S5 step the durable ledger exists for. The 2026-08-16 verification
+was the test suite, not the matrix. Tracked consumer-side.

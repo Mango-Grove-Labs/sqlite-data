@@ -2,8 +2,8 @@
 
 - **Project:** sqlite-data (Mango fork of pointfreeco/sqlite-data)
 - **Target milestone:** Consumer-clearing patches done — reached (5.3a + 5.3b closed the re-open); stop for review (then Phase 4 → "Open patch work done")
-- **Status:** `milestone-reached` (Phase-5 milestone stands; a 1.10.0 retarget also landed on `mango/patches-1.10`)
-- **Updated:** 2026-08-15
+- **Status:** `milestone-reached` (Phase-5 milestone stands; the 1.10.0 retarget + patch 10 also landed on `mango/patches-1.10`, now the adopted consumer base)
+- **Updated:** 2026-08-16
 
 ---
 
@@ -72,22 +72,21 @@ checkout of tag 1.10.0 and on a 5.3b revert — which is what identified the cau
 
 ## Next Concrete Action
 
-> **Decide which base MonteSprout 1.0(17) adopts — the decision is unchanged, but both bases now
-> carry patch 10.** Pushing a fork branch is inert: every consumer still pins a `mango/patches-1.9`
-> revision and those stay valid until `/mango-update` moves them.
+> **Resume with 4.1** — the base question that sat here is settled (see below), and nothing else in
+> this repo is waiting.
 >
-> Decide before adopting: whether 1.0(17) takes the Phase-5 work off `mango/patches-1.9` (as planned
-> in its 48.3) or off the newer 1.10.0 base. Same patch behavior on different upstream bases —
-> adopting 1.10.0 also pulls upstream's `@FetchOne` auto-observation and `StrictDecoding` trait, a
-> bigger consumer change than a pin bump. Recommend: ship 1.0(17) off 1.9 as planned (its tip is
-> patch 10), adopt 1.10.0 in a later, separate bump.
+> **Settled 2026-08-16: the consumer base is `mango/patches-1.10` @ `e18249a`.** Decided by action —
+> MangoSync 0.7.2 pins it and every Mango app has been bumped in lockstep to that same revision and
+> SSH URL, per `MANGO-PATCHES.md` § Consumer rule. This overtook the earlier "ship 1.0(17) off 1.9"
+> recommendation; 1.0(17) therefore also takes upstream's `@FetchOne` auto-observation and
+> `StrictDecoding` trait, which is why its device-matrix re-run covers more than a pin bump would.
 >
-> **Whichever base: do not ship 1.0(17) off a pre-patch-10 revision.** 5.3b's ledger write goes
-> through the host's connection, and without patch 10 a contended write is swallowed — the durability
-> the device matrix exists to verify would be silently absent under exactly the bulk-write conditions
-> the S5 step tests.
+> **Standing constraint for any future pin move: never ship off a pre-patch-10 revision.** 5.3b's
+> ledger write goes through the host's connection, and without patch 10 a contended write is
+> swallowed — the durability the device matrix exists to verify would be silently absent under
+> exactly the bulk-write conditions the S5 step tests.
 >
-> Still open afterwards, unchanged: 4.1 — bound the remaining unbounded `from:` ranges in
+> Next actual work: 4.1 — bound the remaining unbounded `from:` ranges in
 > `Package.swift` **and `Package@swift-6.0.swift`** to the minors the base tag's own
 > `Package.resolved` pins (GRDB first: declared `from: "7.6.0"`, resolves 7.11.1), per the patch-3
 > rationale; full suite twice; update `MANGO-PATCHES.md` § patch 3 "Owed". The structured-queries
@@ -107,11 +106,16 @@ checkout of tag 1.10.0 and on a 5.3b revert — which is what identified the cau
 
 ## Needs You (irreversible / load-bearing — halts the run)
 
-- **Which base MonteSprout 1.0(17) adopts** — `mango/patches-1.9` (as planned in its 48.3) or the new
-  1.10.0 base. Recommendation above: stay on 1.9 for 1.0(17); take 1.10.0 as its own later bump.
-- **Two pre-existing `AccountLifecycleTests` failures** contradict this file's previous "Tests: green"
-  claim. Not caused by the retarget (they fail identically on `mango/patches-1.9`) and not a blocker
-  for it, but they are unexplained and sit in the account-lifecycle path. See Current Status.
+- _none_
+
+Both prior bullets resolved 2026-08-16. **Base = `mango/patches-1.10` @ `e18249a`** — decided by
+action (MangoSync 0.7.2 pins it, every Mango app bumped in lockstep to the same revision + SSH URL).
+Not forced by patch 10 — that landed on **both** bases (`mango/patches-1.9` @ `869c362`,
+`mango/patches-1.10` @ `e18249a`); the choice was the owner's, and its consequence is that 1.0(17)
+also takes upstream's `@FetchOne` auto-observation and `StrictDecoding` trait. The
+**two `AccountLifecycleTests` failures were never pre-existing** — they were 5.3b's metadatabase lock
+contention, root-caused and fixed by patch 10 (consumer re-verified 2026-08-16: full suite ×2, zero
+failures).
 
 ---
 
@@ -121,7 +125,7 @@ checkout of tag 1.10.0 and on a 5.3b revert — which is what identified the cau
 - Patch work is consumer-driven: read the consuming app's incident record (MonteSprout `docs/incidents/…`) before changing or reviewing a patch.
 - Every retarget must follow `MANGO-PATCHES.md` § Rebase procedure including the per-patch vacuity guards — a skipped guard can silently drop a patch.
 - Consumers pin by revision in lockstep (same SHA, same SSH URL form); pushes here are inert until pins bump — never bump pins as a side effect of other work (`/mango-update` owns that).
-- The Phase-5 fixes are proven against the mock; the real proof is the consumer's 1.0(17) device-matrix re-run after adoption — treat the milestone as provisional until that comes back clean.
+- The Phase-5 fixes are proven against the mock, and adoption is now done (base `mango/patches-1.10` @ `e18249a`, 2026-08-16) — but the real proof is still outstanding: the consumer's 1.0(17) **device-matrix re-run on hardware**, including the S5 step this whole phase exists for. The 2026-08-16 re-verification was the test suite, not the matrix. Treat the milestone as provisional until the matrix comes back clean; it is tracked consumer-side (MonteSprout), not here.
 
 ---
 
