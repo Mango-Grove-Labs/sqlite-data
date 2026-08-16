@@ -2,7 +2,7 @@
 
 - **Project:** sqlite-data (Mango fork of pointfreeco/sqlite-data)
 - **Target milestone:** Consumer-clearing patches done — reached (5.3a + 5.3b closed the re-open); stop for review (then Phase 4 → "Open patch work done")
-- **Status:** `milestone-reached`
+- **Status:** `milestone-reached` (Phase-5 milestone stands; a 1.10.0 retarget also landed on `mango/patches-1.10`)
 - **Updated:** 2026-08-15
 
 ---
@@ -43,28 +43,54 @@
   - [x] 5.3a migration nulling the legacy `-1` mirror sentinels — upgraded-ledger test red-verified via the new migration-prefix `upTo:` hook [model: fable]
   - [x] 5.3b always-on durable pending ledger — kill-restart guards red-verified for both S5 shapes; start wipe removed, clears on resolution [model: fable]
 - [x] 🏁 **MILESTONE: Consumer-clearing patches done** ← stop; MonteSprout adopts ALL Phase-5 work in ONE `/mango-update` (its 48.3), then cuts 1.0(17)
+- [x] **Phase 6 — Retarget onto upstream 1.10.0** _(unplanned; done on request 2026-08-15)_
+  - [x] 6.1 Rebase the stack as `mango/patches-1.10` (28 commits; only patch 3 conflicted)
+  - [x] 6.2 Patch 3 retune to `.upToNextMinor(from: "0.36.0")` — 1.10.0's own `Package.resolved` pin
+  - [x] 6.3 Take upstream's `TriggerTests` snapshot re-record (tag 1.10.0 ships a stale snapshot; fixed upstream in #522, unreleased)
+  - [x] 6.4 Review + commit the retarget, push `mango/patches-1.10`
 
 ---
 
 ## Current Status
 
-- **Current phase / sub-phase:** Phase 5 complete — milestone "Consumer-clearing patches done" reached (second closing, after the 5.3 re-open)
-- **State:** milestone-reached (stop for human review + consumer adoption)
-- **Last completed:** 5.3b — the always-on durable pending ledger (all three guards red-verified pre-patch; full suite green twice, 2026-08-15)
-- **Build:** green · **Tests:** green (2026-08-15) · **Simulator-verified:** n/a
+- **Current phase / sub-phase:** Phase 6 complete — `mango/patches-1.10` is committed and pushed
+- **State:** milestone-reached (the Phase-5 milestone stop still stands; the retarget was requested outside the roadmap and does not move it)
+- **Last completed:** 6.4 — reviewed, committed and pushed the retarget (guard-rot correction applied to `MANGO-PATCHES.md` in the same pass)
+- **Build:** green · **Tests:** see below · **Simulator-verified:** n/a
+
+**Test state on `mango/patches-1.10` (full suite, run twice, 2026-08-15):** 329 tests, **2 failures**,
+both **pre-existing** — `AccountLifecycleTests.signInUploadsLocalRecordsToCloudKit_SkipExistingCloudKitRecords`
+and `AccountLifecycleTests.createSharedRecordWhileSoftLoggedOut`. Verified pre-existing by running the
+full suite on `mango/patches-1.9`, where they fail the same way (the filtered-run diffs are
+byte-identical between the two branches). They surface either as
+`SQLite error 5: database is locked` at `SyncEngine.swift:669` (full runs) or as an empty-result
+snapshot mismatch (filtered runs) — i.e. load-sensitive, and unrelated to the retarget.
+
+⚠️ **This contradicts the "Tests: green (2026-08-15)" line this file carried before.** Nothing in the
+1.10.0 work touched those tests, and no dependency pin moved (`Package.resolved` changed only its
+`originHash`). Either the earlier green runs dodged a flake, or something in the local environment
+drifted after they were recorded. **Unresolved — worth a look before the next consumer adoption**,
+since a load-sensitive failure in the account-lifecycle path is exactly the class of thing the
+Phase-5 work exists to make trustworthy.
 
 ---
 
 ## Next Concrete Action
 
-> Milestone reached (second closing) — stop for human review; no in-repo work until then.
-> Adoption is owned by the consumer: MonteSprout 48.3 runs ONE `/mango-update` pin bump (all Phase-5
-> work — 5.1, 5.2, 5.3a, 5.3b — same revision + SSH URL in every Mango app), then cuts 1.0(17) and
-> re-runs its device matrix, including the S5 step the ledger exists for.
-> After review, resume with 4.1: bound the remaining unbounded `from:` ranges in `Package.swift` (and
-> `Package@swift-6.0.swift`) to the minors the 1.9.0 base tag's own `Package.resolved` pins (GRDB
-> first: declared `from: "7.6.0"`, resolves 7.11.0), per the patch-3 rationale; full suite twice;
-> update `MANGO-PATCHES.md` § patch 3 "Owed".
+> **Decide which base MonteSprout 1.0(17) adopts.** `mango/patches-1.10` is pushed, but pushing a
+> fork branch is inert: every consumer still pins `mango/patches-1.9` revisions and those stay valid
+> until a pin moves, which only `/mango-update` does.
+>
+> Decide before adopting: whether MonteSprout's 1.0(17) should adopt the Phase-5 work off
+> `mango/patches-1.9` (as already planned in its 48.3) or off the newer 1.10.0 base. Those are the
+> same patch behavior on different upstream bases — adopting 1.10.0 also pulls upstream's
+> `@FetchOne` auto-observation and `StrictDecoding` trait, which is a bigger consumer change than a
+> pin bump. Recommend: ship 1.0(17) off 1.9 as planned, adopt 1.10.0 in a later, separate bump.
+>
+> Still open afterwards, unchanged: 4.1 — bound the remaining unbounded `from:` ranges in
+> `Package.swift` **and `Package@swift-6.0.swift`** to the minors the base tag's own
+> `Package.resolved` pins (GRDB first: declared `from: "7.6.0"`, resolves 7.11.1), per the patch-3
+> rationale; full suite twice; update `MANGO-PATCHES.md` § patch 3 "Owed".
 
 ---
 
@@ -73,12 +99,18 @@
 - **What fills OVERVIEW/architecture/ROADMAP in a fork repo** → chose **`MANGO-PATCHES.md` stays the single intact reference doc** → DECISIONS.md § 2026-08-15 — /adopt: fork-shaped doc contract
 - **Monorepo surface layout** → chose **waived — the upstream-shaped tree is load-bearing for rebases** → DECISIONS.md § 2026-08-15 — /adopt: fork-shaped doc contract
 - **PRD** → chose **placeholder pointing at the MANGO-PATCHES preamble + consumer incident records** → DECISIONS.md § 2026-08-15 — /adopt: fork-shaped doc contract
+- **Upstream 1.10.0's stale `triggers()` snapshot** → chose **take only #522's two `TriggerTests` lines, not the whole commit; drop at the first tag containing #522** → DECISIONS.md § 2026-08-15 — 1.10.0 retarget
+- **How a retarget proves no patch was dropped, now that 5 of 9 guards have rotted** → chose **the byte-identity check on `Sources/SQLiteData/CloudKit/` is load-bearing; rewriting the rotted guards stays owed** → DECISIONS.md § 2026-08-15 — 1.10.0 retarget
 
 ---
 
 ## Needs You (irreversible / load-bearing — halts the run)
 
-- _none_
+- **Which base MonteSprout 1.0(17) adopts** — `mango/patches-1.9` (as planned in its 48.3) or the new
+  1.10.0 base. Recommendation above: stay on 1.9 for 1.0(17); take 1.10.0 as its own later bump.
+- **Two pre-existing `AccountLifecycleTests` failures** contradict this file's previous "Tests: green"
+  claim. Not caused by the retarget (they fail identically on `mango/patches-1.9`) and not a blocker
+  for it, but they are unexplained and sit in the account-lifecycle path. See Current Status.
 
 ---
 

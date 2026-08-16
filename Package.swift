@@ -65,7 +65,7 @@ let package = Package(
     .package(url: "https://github.com/pointfreeco/swift-snapshot-testing", from: "1.18.4"),
     // MANGO PATCH 3 — bound this range. Upstream declares an open lower bound (`from:`), so a consumer's
     // SPM graph silently resolves whatever is newest. The bound pins the minor this branch's base tag is
-    // actually written and tested against: **1.9.0 pins 0.35.0** in its own `Package.resolved`.
+    // actually written and tested against: **1.10.0 pins 0.36.0** in its own `Package.resolved`.
     //
     // History (the 1.6.6-era outage this patch exists for): 1.6.6 was tested against 0.31.1, but an app
     // that resolved **0.33.1** misaligned `SyncMetadata`'s generated column decoding on that base. The
@@ -80,11 +80,11 @@ let package = Package(
     // `docs/incidents/2026-07-18-metadata-decode-blocks-all-uploads.md`.
     //
     // `.upToNextMinor` because swift-structured-queries is pre-1.0, where minor bumps are breaking by
-    // convention: 0.35.x patches stay allowed, and 0.36+ requires a deliberate, tested upgrade of this fork
+    // convention: 0.36.x patches stay allowed, and 0.37+ requires a deliberate, tested upgrade of this fork
     // (rebasing onto an upstream tag that supports it).
     .package(
       url: "https://github.com/pointfreeco/swift-structured-queries",
-      .upToNextMinor(from: "0.35.0"),
+      .upToNextMinor(from: "0.36.0"),
       traits: [
         .trait(
           name: "LazyInitializableByDefault",

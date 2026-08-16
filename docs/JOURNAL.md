@@ -106,3 +106,52 @@ trips). Known cost accepted: one small async write per changed row (noted in § 
 Full suite green ×2. Phase 5 complete again — milestone "Consumer-clearing patches
 done" re-closed; adoption = MonteSprout 48.3's single `/mango-update`, then 1.0(17) +
 the matrix re-run whose S5 step this whole phase exists for.
+
+## 2026-08-15 — Phase 6: retarget onto upstream 1.10.0 (`mango/patches-1.10`)
+
+Requested outside the roadmap ("check and rebase to latest"). Upstream tag **1.10.0** (2026-08-11)
+is two commits past our 1.9.0 base: `@FetchOne` primary-key auto-observation (#519) and the
+`StrictDecoding` trait (#489). Targeted the tag rather than `upstream/main`, per the procedure;
+main carries one further unreleased commit (#522, below).
+
+The rebase was easy for a structural reason worth recording: **1.9.0→1.10.0 touches no CloudKit
+source at all** (only `FetchOne`, the `StructuredQueries+GRDB` decoding layer, and docs). All 28
+commits replayed with exactly one conflict — patch 3, which conflicts every time by construction.
+Afterwards `git diff mango/patches-1.9 mango/patches-1.10 -- Sources/SQLiteData/CloudKit/` is
+**empty**: every patched library file came through byte-identical. That is a direct refutation of
+the risk step 4 exists for (patch 6's removed case-list codes, 5.3b's removed start wipe), and it
+is now written into `MANGO-PATCHES.md` as the load-bearing anti-drop check at a retarget.
+
+Patch 3 retuned to `.upToNextMinor(from: "0.36.0")` — 1.10.0 raised its own floor to 0.36.0 and
+still declares it **unbounded**, so the patch is still ours to carry. This retune was not cosmetic:
+1.10.0's `Package.resolved` pins 0.36.0, which the old `0.35.0` bound does not admit.
+
+One genuinely new failure, and it was upstream's: `TriggerTests.triggers()` fails on a **clean
+checkout of tag 1.10.0**. The 0.36.0 bump fixed a redundant paren pair in `IN (…)` subquery
+rendering, but the tag's own inline snapshot still records the old form. Upstream fixed it the same
+day in #522 — which is on `main` and in **no release tag**. Took only that commit's two
+`TriggerTests.swift` lines; deliberately left the rest of #522, an unrelated
+`$foo.set(…)` → `.taskLocal(…)` test-API migration that collides with our patched test files.
+
+Two other failures (`AccountLifecycleTests.signInUploadsLocalRecordsToCloudKit_SkipExistingCloudKitRecords`,
+`…createSharedRecordWhileSoftLoggedOut`) are **pre-existing** — the full suite on `mango/patches-1.9`
+fails them identically, and the filtered-run diffs are byte-identical across the two branches. They
+nonetheless contradict the "green (2026-08-15)" line PROGRESS.md carried, and no pin moved to explain
+it (`Package.resolved` changed only its `originHash`). Left unexplained and surfaced under Needs You
+rather than quietly absorbed.
+
+Guard findings (step 4), as corrected by this session's own review pass: **four** guards are clean
+and went red exactly as documented — patch 4, the patch-7 F2 amendment, 5.3a, 5.3b. **Patch 1 is not
+clean**, contrary to the first draft of this entry: its `SyncEngine.swift` revert leaves the file
+unmerged (bare `git revert`) or leaves conflict markers (3-way reverse-apply), and it only goes red
+after the conflict is resolved in favour of the revert — a resolution that can also revert adjacent
+patch content, so the red is not attributable to patch 1 alone. **Patches 5, 6, 7 and 9** are
+inconclusive: bare revert conflicts (5, 6, 7) or reverse-applies to a no-op (9), because 5.3a/5.3b
+later rewrote the same regions. Confirmed **not** rebase damage by running the identical reverts on
+`mango/patches-1.9` — same behavior there. So five of the nine guards have rotted; rewriting them in
+the 5.3a style (neutralize the mechanism in place, don't revert the commit) is now recorded as owed,
+and the byte-identity check is what actually carries the anti-drop guarantee at a retarget.
+
+Committed and pushed as `mango/patches-1.10`. No consumer is affected by the push: pins still point
+at `mango/patches-1.9` revisions and stay valid until `/mango-update` moves them. Left open for the
+user: which base MonteSprout 1.0(17) adopts, and the two unexplained pre-existing test failures.

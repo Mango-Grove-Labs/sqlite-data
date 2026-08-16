@@ -6,9 +6,12 @@ API-compatible with upstream — no app imports a fork-only symbol; patches chan
 dependency manifest, never the public API. Library bugs get fixed **here**, never re-implemented
 or shadowed in an app or wrapper package.
 
-**Consumer branch: `mango/patches-1.9`** — upstream tag `1.9.0` + the patches below.
-(Previous: `mango/patches-1.6` = tag `1.6.6` + the same stack — kept intact; consumer pins on it
-stay valid. Rebased 2026-07-25; only patch 3 conflicted, retargeted per the procedure's step 5.)
+**Consumer branch: `mango/patches-1.10`** — upstream tag `1.10.0` + the patches below.
+(Previous: `mango/patches-1.9` = tag `1.9.0`, `mango/patches-1.6` = tag `1.6.6` — same stack, kept
+intact; consumer pins on them stay valid. Rebased onto 1.10.0 on 2026-08-15; only patch 3
+conflicted, retargeted per the procedure's step 5. Upstream 1.9.0→1.10.0 touches `FetchOne`, the
+`StructuredQueries+GRDB` decoding layer and docs — **no CloudKit source at all** — so all three
+patched library files came through the rebase byte-identical to `mango/patches-1.9`.)
 
 ## The patches
 
@@ -77,8 +80,9 @@ devices** while the app's sync health reported "ok".
 
 The patch: bound the range to the minor the base tag is tested against. On the 1.6.6 base that
 was `.upToNextMinor(from: "0.31.1")`; on the 1.7.0 base, `.upToNextMinor(from: "0.33.2")`; on the
-current 1.9.0 base it is **`.upToNextMinor(from: "0.35.0")`** (1.9.0's own `Package.resolved`
-pin — upstream's floor moved to 0.35.0). Pre-1.0 minor bumps are breaking by
+1.9.0 base, `.upToNextMinor(from: "0.35.0")`; on the current 1.10.0 base it is
+**`.upToNextMinor(from: "0.36.0")`** (1.10.0's own `Package.resolved` pin — upstream's floor moved
+to 0.36.0). Pre-1.0 minor bumps are breaking by
 convention, so same-minor patches stay allowed and **the next minor becomes a deliberate, tested
 fork upgrade** (rebase onto an upstream tag that supports it) rather than something a consumer's
 resolver decides silently.
@@ -88,10 +92,16 @@ same thing to a consumer. Treat a widened range as a library change requiring th
 
 **Owed: audit the remaining unbounded ranges.** Every other dependency here is still declared
 `from:` with no ceiling, and this repo's own `Package.resolved` shows how far they drift —
-**GRDB is declared `from: "7.6.0"` and resolves to 7.11.0**, the largest gap in the manifest and
+**GRDB is declared `from: "7.6.0"` and resolves to 7.11.1**, the largest gap in the manifest and
 the one sitting closest to the storage layer. Nothing has gone wrong there; the point is that
 nothing would tell us if it did. (Tracked as item 8 of the MonteSprout incident, but the work
 happens in this repo.)
+
+Note the audit must cover **`Package@swift-6.0.swift`** as well: patch 3 has only ever touched
+`Package.swift`, and the 6.0 fallback manifest still declares `swift-structured-queries` as a bare
+`from: "0.35.0"` — unbounded, and now also *behind* the live manifest's floor. It is inert on a
+6.1+ toolchain (which is what this fork and every consumer build with), so it is not a live
+exposure today, but it is exactly the same class of hole.
 
 ### 4. A failed `CKAsset` download must be parked for retry, never written as `NULL`
 
@@ -451,6 +461,54 @@ after a round trip and diverge exactly while an edit is unsent. It must be read 
   1.6.6; repaired with a bounded settle loop + `withKnownIssue(isIntermittent:)` for a residual
   mock-atomicity gap (see that commit's message for the full mechanism).
 
+### Test commits — the 1.10.0 base (no library behavior change, not a Mango patch)
+
+- **`TriggerTests` snapshot re-record.** Tag 1.10.0 ships a *stale* inline snapshot: it raised its
+  `swift-structured-queries` floor to 0.36.0, which fixed a redundant paren pair in `IN (…)`
+  subquery rendering, but the tag's own recorded SQL still carries the old `IN ((WITH …)))` form.
+  `triggers()` therefore fails on **vanilla 1.10.0** — verified against a clean checkout of the tag,
+  so it is upstream's defect, not the patch stack's. Upstream fixed it the same day in
+  [#522](https://github.com/pointfreeco/sqlite-data/commit/f4bf8e9) ("Re-record snapshots"), which
+  is on `main` and **in no release tag**. We take *only* that commit's two `TriggerTests.swift`
+  lines, verbatim. Deliberately **not** taken: the rest of #522, which is an unrelated
+  `$foo.set(…)` → `.taskLocal($foo, …)` test-API migration that collides with our patched test
+  files. Drop this re-record at the first upstream tag that contains #522.
+
+## Guard executability — read before trusting step 4
+
+Guard rot is real and it is now the majority of them. Status as re-verified on the 1.10.0 retarget
+(2026-08-15):
+
+- **Clean and red as documented — four:** **patch 4, the patch-7 F2 amendment, 5.3a, 5.3b**. Their
+  library-source revert applies without conflict (5.3a via its own unregister-the-migration method),
+  and each went red on exactly the tests step 4 names, with the documented neighbours staying green.
+  These four are the ones you can still trust as written.
+- **Red, but only after resolving a conflict — patch 1.** Its `SyncEngine.swift` revert does **not**
+  apply cleanly: a bare `git revert` leaves the file unmerged and a 3-way reverse-apply leaves
+  conflict markers. Resolving in favour of the revert does produce exactly the documented red (all
+  three assertions on `cascadeChild_isParkedAndReEnqueued_notDeleted`, the other two tests green) —
+  but that resolution can revert adjacent patch content in the same region, so the red is not
+  attributable to patch 1 alone. Treat it as suggestive, not as a clean guard.
+- **Inconclusive — patches 5, 6, 7 and 9.** A bare revert conflicts (5, 6, 7) or reverse-applies to
+  a no-op (9), because 5.3a/5.3b later rewrote the same `SyncEngine` regions.
+
+None of this is rebase damage: the identical reverts behave the same way on `mango/patches-1.9`,
+checked side by side. The step-4 text for the broken five was last truly verified 2026-08-10, before
+5.3a/5.3b landed.
+
+**Owed: rewrite the five rotted guards** (patches 1, 5, 6, 7, 9) in the 5.3a style — neutralize the
+specific mechanism in place rather than reverting the commit, which is the only approach that stays
+stable as later patches touch the same regions. Until then, the load-bearing anti-drop check is
+the **byte-identity check**: upstream has never touched `CloudKit/SyncEngine.swift`,
+`CloudKit/Internal/Metadatabase.swift` or `CloudKit/SyncMetadata.swift`, so after any retarget
+
+```
+git diff <previous mango branch> <new mango branch> -- Sources/SQLiteData/CloudKit/
+```
+
+must be **empty**. That is a direct refutation of the exact risk step 4 exists for — patch 6's
+removed case-list codes, 5.3b's removed start wipe — and it caught nothing amiss on this retarget.
+
 ## Why upstream won't take patches 1–2
 
 Reported as [pointfreeco/sqlite-data#485](https://github.com/pointfreeco/sqlite-data/issues/485);
@@ -467,8 +525,8 @@ Unlike patches 1–2, patch 3 is **not** a disputed behavior change — bounding
 left unbounded is a fix upstream would plausibly accept, and if they take it this patch disappears.
 Not reported so far. Two things to do at each rebase: check whether the new upstream tag already
 bounds `swift-structured-queries` (if so, drop patch 3 rather than re-applying it), and if it still
-doesn't, consider filing it. As of 2026-07-18 there is **no upstream tag above 1.6.6**, so there is
-nothing newer to move to.
+doesn't, consider filing it. Re-checked at the 1.10.0 retarget (2026-08-15): upstream **still**
+declares it unbounded (`from: "0.36.0"`), so patch 3 is still ours to carry. Not reported so far.
 
 ## Consumer rule
 
@@ -547,10 +605,19 @@ nothing newer to move to.
      `aKilledDeleteIsReEnqueuedAtStart`, `theLedgerClearsOnResolution` — the ledger is never written
      while the engine runs); `git reset --hard` → green.
 
-   A rebase that skips these can silently drop a guard.
+   A rebase that skips these can silently drop a guard. **Before running any of them, read
+   "Guard executability" above** — only four of the nine still revert cleanly, and the byte-identity
+   check described there is the check that actually rules out a dropped patch.
+
+4b. **Baseline the suite on the previous branch before judging a failure.** Run the full suite on
+   the outgoing `mango/patches-*` branch and diff the failure list against the new one; a failure
+   present on both is pre-existing, not rebase damage. On the 1.10.0 retarget this separated one
+   genuinely new failure (an upstream stale snapshot) from two pre-existing ones. Also run the
+   suspect test against a **clean checkout of the new upstream tag** — that is what proved
+   `triggers()` was upstream's bug and not ours.
 5. **Manifest check (required):** confirm `Package.swift` still carries an `.upToNextMinor`
    bound for `swift-structured-queries` matching the base tag's own `Package.resolved` pin
-   (currently `.upToNextMinor(from: "0.35.0")` on `mango/patches-1.9`) — the new upstream tag's
+   (currently `.upToNextMinor(from: "0.36.0")` on `mango/patches-1.10`) — the new upstream tag's
    tested minor, not the previous branch's literal. **No test can catch a
    dropped patch 3**: the suite resolves via this repo's own `Package.resolved` and stays green on
    any version, which is exactly how the original outage reached the field. Check it by eye.

@@ -95,3 +95,32 @@ one mechanism covering the stranded edit, the stranded DELETE, and the park cras
 Also split for sizing: 5.3a (the `-1` sentinel migration, the adoption blocker) and 5.3b (the
 ledger) are separate session-sized slices; the stranded-DELETE rescan exclusion (§ 5.2 entry)
 stands for the rescan predicate itself.
+
+## 2026-08-15 — 1.10.0 retarget: what we take from upstream, and what now proves a patch survived
+
+**Take only the two `TriggerTests.swift` lines from upstream #522, not the commit.** Tag 1.10.0 ships
+a stale inline snapshot — it raised its `swift-structured-queries` floor to 0.36.0, which removed a
+redundant paren pair in `IN (…)` subquery rendering, but left the old form recorded. `triggers()`
+therefore fails on a **clean checkout of the tag**; verified against vanilla 1.10.0 before touching
+anything, which is what established it as upstream's defect and not the patch stack's. Upstream fixed
+it the same day in #522, but that commit is on `main` and in **no release tag**, and the rest of it is
+an unrelated `$foo.set(…)` → `.taskLocal($foo, …)` test-API migration that collides with our patched
+test files. So: take the snapshot re-record verbatim, leave the migration, and drop the re-record at
+the first upstream tag containing #522. Rejected alternative — cherry-pick all of #522: it drags an
+unreleased test-API migration into a fork whose whole value is being boring relative to upstream.
+
+**The byte-identity check, not the step-4 guards, is now what rules out a dropped patch at a
+retarget.** Re-verifying the guards on this retarget found that five of the nine have rotted: patches
+5, 6, 7 and 9 no longer revert at all (conflict, or a no-op reverse-apply), and patch 1 reverts only
+with a conflict resolution that can also revert adjacent patch content — because 5.3a/5.3b later
+rewrote the same `SyncEngine` regions. This is not rebase damage; the identical reverts behave the
+same way on `mango/patches-1.9`. The replacement check exploits a durable structural fact: upstream
+has never touched `CloudKit/SyncEngine.swift`, `CloudKit/Internal/Metadatabase.swift` or
+`CloudKit/SyncMetadata.swift`, so `git diff <old mango branch> <new mango branch> --
+Sources/SQLiteData/CloudKit/` must be **empty** after any retarget. That directly refutes the exact
+failure step 4 exists to catch — a conflict resolved by taking upstream's side silently reverting
+patch 6's removed case-list codes or 5.3b's removed start wipe, neither of which produces a compile
+error. It is strictly stronger than the guards *for the drop question*, and strictly weaker for the
+"is the patch still meaningful on the new base" question, which is why rewriting the rotted guards in
+the 5.3a style (neutralize the mechanism in place, never revert the commit) stays owed rather than
+cancelled.
