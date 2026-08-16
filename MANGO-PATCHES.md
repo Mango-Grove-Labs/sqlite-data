@@ -39,7 +39,8 @@ Known limitations (accepted; observability planned in the consumer's MangoSync w
   unsynced drain sees `.unknownItem` for the parked ID (the record never reached the server) and
   clears the park row without re-enqueueing. The child is then local-only with no retry until a
   force-re-upload or account-change re-enqueue. Surface via sync-health trends, don't rely on
-  the park row as a durable retry ledger.
+  the park row as a durable retry ledger. *(Since patch 9, the engine-start rescan re-enqueues the
+  never-confirmed child at the next launch — the window now costs a relaunch, not a manual reupload.)*
 
 ### 2. Report every silently-dropped failed SAVE with its CKError
 
@@ -243,7 +244,9 @@ Known limitations (accepted):
   the deliberate trade against patch 2's invisibility; triage on the wording, not the count.
 - **In-memory until serialized.** Same crash-window caveat as patch 1 — the re-enqueued change lives
   in CKSyncEngine's state, so a process death before its next serialization loses the retry and the
-  row waits for a relaunch (i.e. it degrades to today's behavior, never worse).
+  row waits for a relaunch. *(The 1.0(16) matrix proved the relaunch did NOT heal on the 1.9 base —
+  that gap is what patch 9 closes: the engine-start rescan re-enqueues the stranded save; a stranded
+  transition-window DELETE remains out of its scope, § 9.)*
 - **Neither half fixes the host's health signal.** The lingering "not syncing" line is a consumer
   concern (MonteSprout 41.1b), not something the library can clear.
 
@@ -333,34 +336,48 @@ arguably wrong").
 (Numbering note: this item briefly shared the number 4 with the asset-park patch while both were
 unwritten; the asset patch kept 4 on implementation, this one moved to 8.)
 
-### 9. Planned — a parked save must survive the process; a stranded row must be rescanned at start
+### 9. A stranded row is rescanned at engine start (never a blanket reupload)
 
-*MonteSprout F10 (the 1.0(16) matrix's hard failure; Phase-5.2 here). Evidence + timeline:
-the consumer's `docs/incidents/2026-08-15-device-matrix-1.0.16.md`.*
+*MonteSprout F10 (the 1.0(16) matrix's hard failure); implemented 2026-08-15 on `mango/patches-1.9`.
+Evidence + timeline: the consumer's `docs/incidents/2026-08-15-device-matrix-1.0.16.md`.*
 
-Patch 6 parks a failed save by re-enqueueing into **CKSyncEngine's in-memory state** — documented at the
-time as "in-memory until serialized … degrades to today's behavior, never worse". The matrix proved the
-degraded case is now worse than "today" ever was: after a force-quit inside the park window, **nothing**
-re-enqueues the row — not account restoration (the transition machinery demonstrably ran: the keep-data
-delegate breadcrumb fired), not relaunch (on the 1.9 base no engine-start path rescans the ledger; the
-1.0(15) behavior where relaunch healed is gone). Result: writes stranded silently and permanently,
-`pending=0` honest-but-blind, recovered only by a manual `forceFullReupload`.
+The stranding mechanism: while the engine runs, a local write's pending save lives **only in
+CKSyncEngine's in-memory state** (the durable `PendingRecordZoneChange` rows are written only while the
+engine is *stopped*, and drained at the next start). A process death inside that window loses the change
+— and on the 1.9 base nothing at `start()` rescanned the ledger, so the row stayed stranded silently and
+permanently: `pending=0` honest-but-blind, recovery only by a manual `forceFullReupload`. Patch 6's
+in-memory park shares the window (its "degrades to today's behavior, never worse" note undersold this:
+after the force-quit, account restoration demonstrably ran and did not help, and relaunch no longer
+healed as it had on the 1.0(15)/1.6.6 base).
 
-Fix shape:
-- **Engine-start targeted re-enqueue (REQUIRED)** — at `start()`, re-enqueue exactly the rows the ledger
-  already knows are stranded: `lastKnownServerRecord IS NULL` (never confirmed) plus
-  `serverUserModificationTime < userModificationTime` (unsent edit, patch 7's mirror). This is the only
-  half that heals rows **already stranded in the field** — a durable park protects future parks but does
-  nothing for a fleet device that hit the window before the fix ships, so it cannot suffice alone.
-  **Never a blanket
-  reupload** (blob-table rewrite cost, fleet-wide re-fetch, stamp-stomp risk — consumer DECISIONS,
-  2026-08-15). ⚠ **Depends on the § 7 amendment landing first**: with the mirror flooded, the "targeted"
-  predicate selects every row and becomes the blanket reupload just ruled out.
-- **Durable park (optional hardening)** — persist the park (or force a state serialization) at park
-  time, so a process death can't lose it and the row never waits for the next engine start.
+The patch: `start()` runs `enqueueStrandedRecordsForCloudKit()` (right after the durable pending-table
+drain) — the same no-op-update idiom as the account-change path's `enqueueUnknownRecordsForCloudKit`,
+with the **targeted** predicate: live rows (`NOT _isDeleted`) that are **never confirmed**
+(`lastKnownServerRecord IS NULL`) or **mirror-behind** (`serverUserModificationTime <
+userModificationTime`, patch 7's column — which is why this depends on the § 7 F2 amendment: a flooded
+mirror would turn "targeted" into the blanket reupload the consumer explicitly ruled out, and a **NULL
+mirror is "unknown", never a trigger** — SQL's `NULL < x` semantics are load-bearing in the predicate).
 
-Guard tests per fork discipline (a kill-restart-shaped test that goes red when the rescan is reverted),
-vacuity check, and this section rewritten from Planned to landed on implementation.
+Deliberate scope bounds (accepted):
+
+- **A stranded DELETE is not rescanned.** A locally-deleted row whose delete died with the process is
+  excluded (`NOT _isDeleted` — re-enqueueing it through the no-op-update idiom would emit a *save* and
+  resurrect the row). The next fetch round's record delivery or a relaunch-era delete re-issue does not
+  exist for this shape either; extend patch-9-style with a delete-aware re-enqueue if the fleet ever
+  shows it.
+- **The durable park (persisting the park at park time) remains optional hardening, not built** — the
+  rescan is the half that heals rows *already stranded in the field*, which a durable park cannot.
+- **Mirror-behind is inert where acks stay slim.** On real CloudKit a confirmed row's mirror stays NULL
+  (F2 amendment), so the mirror-behind half fires only where acks carry stamps; the never-confirmed half
+  is the field workhorse.
+
+- **`EngineStartRescanTests`** — pins the patched contract kill-restart-shaped (`stop()` discards the
+  engines and their in-memory pending state, the same loss a force-quit produces, while the durable
+  table stays empty because the engine was running): a killed never-confirmed save is re-enqueued at
+  start and lands; a killed unsent edit is re-enqueued via the mirror and catches up; and the boundary —
+  an in-sync row and a slim-ack NULL-mirror confirmed row are NOT re-enqueued (targeted, never blanket).
+  Reverting the patch sends the two rescan tests red (verified 2026-08-15) and leaves the boundary test
+  green.
 
 ### Characterization — what a "waiting to upload" count derived from `lastKnownServerRecord` cannot see
 
@@ -449,7 +466,9 @@ nothing newer to move to.
    **patch 5 (the throwing
    `deleteLocalData()` clear)**, **patch 6 (auth-transition park-and-retry)**, **patch 7 (the mirrored
    server `userModificationTime` — schema, so keep its migration registered after upstream's) plus its
-   F2 amendment commit (the stampless-ack mirror guard in `setLastKnownServerRecord`)**, the test
+   F2 amendment commit (the stampless-ack mirror guard in `setLastKnownServerRecord`)**, **patch 9
+   (the engine-start targeted rescan — `enqueueStrandedRecordsForCloudKit` + its `start()` call
+   site)**, the test
    commits (take them from the tip of the previous `mango/patches-*` branch). Resolve conflicts by **idiom, not line
    number** — the `SyncEngine` error-handling region drifts. Patch 3 conflicts every time, because the
    rebase re-inherits upstream's `from:` declaration — take **ours**, retuned to the new base tag's
@@ -484,6 +503,10 @@ nothing newer to move to.
      UnsentUpdateVisibilityTests` must go **red** on `aStamplessSaveAckNeverInventsAMirrorStamp` *and*
      `aStamplessReAckPreservesTheEarlierMirrorStamp` (both on the `-1` mechanism), while the other three
      stay green; `git reset --hard` → green.
+   - `git revert --no-commit <patch-9 sha>` → `swift test --filter EngineStartRescanTests` must go
+     **red** on `aKilledNeverConfirmedSaveIsReEnqueuedAtStart` *and* `aKilledUnsentEditIsReEnqueuedAtStart`
+     (the row stays stranded across the restart), while `confirmedRowsAreNotRescannedAtStart` stays
+     green; `git reset --hard` → green.
 
    A rebase that skips these can silently drop a guard.
 5. **Manifest check (required):** confirm `Package.swift` still carries an `.upToNextMinor`

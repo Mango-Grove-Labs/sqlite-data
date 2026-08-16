@@ -49,3 +49,15 @@ the matrix failed on S5 and MonteSprout's build 17 is gated on these two slices.
    stamp-stomp risk); hence the hard dependency 5.1 → 5.2 (a flooded mirror makes "targeted" = "all").
 5. **Adoption is ONE pin bump after both slices** (MonteSprout 48.3 via `/mango-update`), then the
    consumer cuts 1.0(17) and re-runs its full matrix — the fork's milestone stops here for review.
+
+## 2026-08-15 — 5.2: stranded deletes stay out of the start rescan
+
+Patch 9's engine-start rescan selects **live rows only** (`NOT _isDeleted`). A locally-deleted row
+whose pending DELETE died with the process is a real stranded shape (the row resurrects on the next
+fetch), but the rescan's no-op-update idiom emits a *save* per selected row — including a tombstone
+would re-save the record the user deleted, which is worse than the stranding. A delete-aware
+re-enqueue is a different mechanism (read the tombstone's recordID and `state.add(.deleteRecord(…))`
+directly) and no fleet evidence shows the shape yet, so it stays out of the targeted predicate.
+Reversal: extend patch-9-style when evidence arrives (noted in `MANGO-PATCHES.md` § 9 scope bounds).
+Also deliberately not built: the durable park (optional hardening per the plan) — the rescan alone
+heals rows already stranded in the field, which the park cannot.

@@ -43,3 +43,19 @@ the targeted rescan must treat NULL as "unknown", never as a rescan trigger, or 
 degrades into the ruled-out blanket reupload (recorded in PROGRESS Assumptions & Risks).
 MANGO-PATCHES: § 7 defect note rewritten as the landed F2 amendment; rebase procedure
 gains its cherry-pick + vacuity-guard entries.
+
+## 2026-08-15 — 5.2 shipped: patch 9 (engine-start targeted rescan) — milestone reached
+
+Mechanism pinned first: while the engine runs, pending saves live only in CKSyncEngine's
+in-memory state (the durable `PendingRecordZoneChange` table is written only while
+stopped), so a force-quit loses them and nothing at `start()` rescanned the ledger.
+`EngineStartRescanTests` reproduces the kill with `stop()`→`start()` (mock engines are
+rebuilt fresh, discarding in-memory state) — both rescan tests red pre-patch. The fix:
+`enqueueStrandedRecordsForCloudKit()` at start, the account-change path's no-op-update
+idiom with the targeted predicate (live rows, never-confirmed OR mirror-behind via
+`#sql` so `NULL < x` stays not-selected). Boundary test pins targeted-never-blanket
+(in-sync + slim-ack NULL-mirror rows untouched). Stranded DELETEs deliberately excluded
+(would re-save the tombstone — DECISIONS § 5.2); durable park not built (optional per
+plan). 3 new tests; full suite green ×2. Phase 5 complete — milestone
+"Consumer-clearing patches done" reached; adoption = MonteSprout 48.3's single
+`/mango-update` pin bump, then 1.0(17) + matrix re-run.

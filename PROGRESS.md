@@ -1,8 +1,8 @@
 # Project Progress
 
 - **Project:** sqlite-data (Mango fork of pointfreeco/sqlite-data)
-- **Target milestone:** Open patch work done — stop here for review
-- **Status:** `in-progress`
+- **Target milestone:** Consumer-clearing patches done — reached; stop for review (then Phase 4 → "Open patch work done")
+- **Status:** `milestone-reached`
 - **Updated:** 2026-08-15
 
 ---
@@ -39,31 +39,30 @@
 - [ ] 🏁 **MILESTONE: Open patch work done** ← stop for review
 - [ ] **Phase 5 — Consumer fix round: the 1.0(16) matrix findings (F2 + F10)** _(jumps the queue ahead of Phase 4 — release-blocking for MonteSprout; evidence: the consumer's `docs/incidents/2026-08-15-device-matrix-1.0.16.md`; scope prose: `MANGO-PATCHES.md` § 7 defect note + § 9 Planned)_
   - [x] 5.1 Patch 7 amendment — F2: slim-ack `?? -1` mirror false-positive → reproduced red first, then guarded (a stampless ack leaves the mirror untouched) [model: fable]
-  - [ ] 5.2 Patch 9 — F10: engine-start targeted re-enqueue REQUIRED (never-confirmed + mirror-behind rows; the only half that heals already-stranded fleet rows; blanket reupload ruled out), durable park optional hardening; kill-restart-shaped guard test + vacuity check _(depends on 5.1 — a flooded mirror degrades the targeted rescan into the blanket reupload)_ [model: fable]
-- [ ] 🏁 **MILESTONE: Consumer-clearing patches done** ← stop; MonteSprout adopts both in ONE `/mango-update` (its 48.3), then cuts 1.0(17)
+  - [x] 5.2 Patch 9 — F10: engine-start targeted rescan (never-confirmed + mirror-behind; stranded DELETEs deliberately out of scope) [model: fable]
+- [x] 🏁 **MILESTONE: Consumer-clearing patches done** ← stop; MonteSprout adopts both in ONE `/mango-update` (its 48.3), then cuts 1.0(17)
 
 ---
 
 ## Current Status
 
-- **Current phase / sub-phase:** 5.2 — Patch 9 (F10: engine-start targeted re-enqueue)
-- **State:** not-started — Phase 5 continues to run ahead of Phase 4 (release-blocking for the consumer)
-- **Last completed:** 5.1 — Patch 7 F2 amendment (suspect reproduced red on the `-1` mechanism, then the stampless-ack guard landed; full suite green twice, 2026-08-15)
+- **Current phase / sub-phase:** Phase 5 complete — milestone "Consumer-clearing patches done" reached
+- **State:** milestone-reached (stop for human review + consumer adoption)
+- **Last completed:** 5.2 — Patch 9, engine-start targeted rescan (kill-restart guard red-verified pre-patch; full suite green twice, 2026-08-15)
 - **Build:** green · **Tests:** green (2026-08-15) · **Simulator-verified:** n/a
 
 ---
 
 ## Next Concrete Action
 
-> Implement 5.2 (⚠ [model: fable] — check the session model first): patch 9 per `MANGO-PATCHES.md` § 9
-> Planned — the engine-start targeted re-enqueue is the REQUIRED half: at `start()`, re-enqueue exactly
-> `lastKnownServerRecord IS NULL` (never confirmed) plus `serverUserModificationTime <
-> userModificationTime` (mirror-behind) rows; never a blanket reupload, and **never rescan NULL-mirror
-> rows** (after 5.1, a slim-ack device's confirmed rows keep a NULL mirror — selecting them IS the
-> blanket reupload the consumer ruled out). Durable park is optional hardening. Guard: a
-> kill-restart-shaped test that goes red when the rescan is reverted + vacuity check; full suite twice;
-> rewrite § 9 from Planned to landed; add its cherry-pick + vacuity entries to the rebase procedure.
-> _(4.1's bounded-range audit resumes after Phase 5.)_
+> Milestone reached — stop for human review; no in-repo work until then.
+> Adoption is owned by the consumer: MonteSprout 48.3 runs ONE `/mango-update` pin bump (both Phase-5
+> patches together, same revision + SSH URL in every Mango app), then cuts 1.0(17) and re-runs its
+> device matrix.
+> After review, resume with 4.1: bound the remaining unbounded `from:` ranges in `Package.swift` (and
+> `Package@swift-6.0.swift`) to the minors the 1.9.0 base tag's own `Package.resolved` pins (GRDB
+> first: declared `from: "7.6.0"`, resolves 7.11.0), per the patch-3 rationale; full suite twice;
+> update `MANGO-PATCHES.md` § patch 3 "Owed".
 
 ---
 
@@ -72,6 +71,7 @@
 - **What fills OVERVIEW/architecture/ROADMAP in a fork repo** → chose **`MANGO-PATCHES.md` stays the single intact reference doc** → DECISIONS.md § 2026-08-15 — /adopt: fork-shaped doc contract
 - **Monorepo surface layout** → chose **waived — the upstream-shaped tree is load-bearing for rebases** → DECISIONS.md § 2026-08-15 — /adopt: fork-shaped doc contract
 - **PRD** → chose **placeholder pointing at the MANGO-PATCHES preamble + consumer incident records** → DECISIONS.md § 2026-08-15 — /adopt: fork-shaped doc contract
+- **Stranded DELETEs excluded from the start rescan** → chose **live rows only; extend patch-9-style if the fleet shows the delete shape** → DECISIONS.md § 2026-08-15 — 5.2: stranded deletes stay out of the start rescan
 
 ---
 
@@ -87,8 +87,7 @@
 - Patch work is consumer-driven: read the consuming app's incident record (MonteSprout `docs/incidents/…`) before changing or reviewing a patch.
 - Every retarget must follow `MANGO-PATCHES.md` § Rebase procedure including the per-patch vacuity guards — a skipped guard can silently drop a patch.
 - Consumers pin by revision in lockstep (same SHA, same SSH URL form); pushes here are inert until pins bump — never bump pins as a side effect of other work (`/mango-update` owns that).
-- Assumed in-sync at adoption: suite last verified green 2026-08-10; re-verify before starting the next sub-phase.
-- After 5.1, on devices whose acks stay slim, the mirror holds NULL for confirmed rows — 5.2's mirror-behind predicate only fires where acks carry stamps; its main field value is the never-confirmed half. A NULL mirror is "unknown", never a rescan trigger.
+- The Phase-5 fixes are proven against the mock; the real proof is the consumer's 1.0(17) device-matrix re-run after adoption — treat the milestone as provisional until that comes back clean.
 
 ---
 
