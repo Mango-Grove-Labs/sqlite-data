@@ -59,3 +59,17 @@ idiom with the targeted predicate (live rows, never-confirmed OR mirror-behind v
 plan). 3 new tests; full suite green ×2. Phase 5 complete — milestone
 "Consumer-clearing patches done" reached; adoption = MonteSprout 48.3's single
 `/mango-update` pin bump, then 1.0(17) + matrix re-run.
+
+## 2026-08-15 — Consumer review: 5.1/5.2 approved, Phase 5 re-opened as 5.3a/5.3b
+
+The consumer-side review (MonteSprout session) approved both slices but found two
+adoption blockers, and the fork-side plan review of that round corrected one mechanism.
+5.3a = one-time migration nulling legacy `-1` mirror sentinels: pre-amendment rows hold
+`-1`, patch 9 selects `-1 < local` at every start, and the amended funnel (correctly)
+never repairs a slim ack — an upgraded device would blanket-reupload its whole dataset
+per launch, through the composition of two individually-correct patches. 5.3b = the
+always-on durable `PendingRecordZoneChange` ledger (writes while running, clears on
+ack/send, drains at start, parks write through) — replacing the review's "park persists
+at park time", which could never catch a mid-flight force-quit (no park handler ever
+sees it; its own promised stranded-edit test would have stayed red). Milestone
+un-checked until 5.3 lands; both boxes tagged `[model: fable]`. Docs only, no code.
