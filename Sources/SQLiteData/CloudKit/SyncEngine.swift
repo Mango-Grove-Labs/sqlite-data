@@ -631,7 +631,11 @@
     ) async throws {
       try await enqueueLocallyPendingChanges()
       try await userDatabase.write { db in
-        try PendingRecordZoneChange.delete().execute(db)
+        // MANGO 5.3b — upstream wiped the ledger here after draining it into memory, which is
+        // exactly the crash window this patch closes: rows now persist until their send RESOLVES
+        // (`handleSentRecordZoneChanges` clears them; the batch builder clears drop-forevers), so
+        // no blanket delete. Re-drained duplicates are absorbed by the engine state's set
+        // semantics.
 
         let newTableNames = currentRecordTypeByTableName.keys.filter { tableName in
           previousRecordTypeByTableName[tableName] == nil
@@ -640,6 +644,69 @@
         try $_isSynchronizingChanges.withValue(false) {
           for tableName in newTableNames {
             try self.uploadRecordsToCloudKit(tableName: tableName, db: db)
+          }
+        }
+      }
+    }
+
+    // MANGO 5.3b — the durable pending ledger is ALWAYS-ON. Upstream writes the
+    // `PendingRecordZoneChange` table only while the engine is stopped, so a change made while it
+    // runs exists solely in CKSyncEngine's in-memory state until the next serialization — the
+    // crash window that stranded the consumer's S5 rows in the two shapes patch 9's rescan cannot
+    // see (an edit to a slim-acked NULL-mirror row; a DELETE). Lifecycle now: every local change
+    // persists a row (didUpdate/didDelete, running or not) · every sent outcome clears its rows
+    // (success AND failure — the failure handlers re-enqueue through the ledger) · the batch
+    // builder's drop-forever sites clear (else an absent record loops the start drain) · the
+    // existing start drain re-enqueues whatever is left. Rows are matched by DECODING — the
+    // NSKeyedArchiver blob is not byte-stable — which is fine because the table only ever holds
+    // unresolved changes. Inserts are deliberately not deduplicated (a bulk first-start upload
+    // would pay O(n²)); duplicates are bounded by edits-between-syncs, cleared together on
+    // resolution, and deduplicated by the engine state's set semantics on drain.
+    private func persistPendingRecordZoneChanges(
+      _ changes: [CKSyncEngine.PendingRecordZoneChange]
+    ) async {
+      guard !changes.isEmpty else { return }
+      await withErrorReporting(.sqliteDataCloudKitFailure) {
+        try await userDatabase.write { db in
+          try PendingRecordZoneChange
+            .insert { changes.map { PendingRecordZoneChange($0) } }
+            .execute(db)
+        }
+      }
+    }
+
+    private func clearPersistedPendingRecordZoneChanges(
+      _ changes: [CKSyncEngine.PendingRecordZoneChange]
+    ) async {
+      guard !changes.isEmpty else { return }
+      let targets = Set(changes)
+      await withErrorReporting(.sqliteDataCloudKitFailure) {
+        try await userDatabase.write { db in
+          let rows = try GRDB.Row.fetchAll(
+            db,
+            sql: """
+              SELECT rowid, "pendingRecordZoneChange"
+                FROM "\(String.sqliteDataCloudKitSchemaName)_pendingRecordZoneChanges"
+              """
+          )
+          let matched = rows.compactMap { row -> Int64? in
+            guard
+              let data = row["pendingRecordZoneChange"] as Data?,
+              let change = CKSyncEngine.PendingRecordZoneChange.DataRepresentation(
+                queryBinding: .blob([UInt8](data))
+              ),
+              targets.contains(change.queryOutput)
+            else { return nil }
+            return row["rowid"] as Int64?
+          }
+          for rowid in matched {
+            try db.execute(
+              sql: """
+                DELETE FROM "\(String.sqliteDataCloudKitSchemaName)_pendingRecordZoneChanges"
+                 WHERE rowid = ?
+                """,
+              arguments: [rowid]
+            )
           }
         }
       }
@@ -877,23 +944,15 @@
         )
       }
 
-      guard isRunning else {
-        // TODO: Perform this work in a trigger instead of a task.
-        Task { [changes = oldChanges + newChanges] in
-          await withErrorReporting(.sqliteDataCloudKitFailure) {
-            try await userDatabase.write { db in
-              try PendingRecordZoneChange
-                .insert {
-                  for change in changes {
-                    PendingRecordZoneChange(change)
-                  }
-                }
-                .execute(db)
-            }
-          }
-        }
-        return
+      // MANGO 5.3b — persist ALWAYS, not only while stopped (see
+      // `persistPendingRecordZoneChanges`). Still a Task: the trigger cannot write re-entrantly
+      // from inside the user's transaction (upstream's own TODO), so the write is asynchronous —
+      // a crash between the user write and this landing degrades to today's behavior, never worse.
+      // TODO(upstream): Perform this work in a trigger instead of a task.
+      Task { [changes = oldChanges + newChanges] in
+        await persistPendingRecordZoneChanges(changes)
       }
+      guard isRunning else { return }
       let oldSyncEngine = self.syncEngines.withValue {
         oldZoneID.ownerName == CKCurrentUserDefaultName ? $0.private : $0.shared
       }
@@ -922,18 +981,11 @@
       if let share {
         changes.append(.deleteRecord(share.recordID))
       }
-      guard isRunning else {
-        Task { [changes] in
-          await withErrorReporting(.sqliteDataCloudKitFailure) {
-            try await userDatabase.write { db in
-              try PendingRecordZoneChange
-                .insert { changes.map { PendingRecordZoneChange($0) } }
-                .execute(db)
-            }
-          }
-        }
-        return
+      // MANGO 5.3b — persist ALWAYS (same shape as `didUpdate` above).
+      Task { [changes] in
+        await persistPendingRecordZoneChanges(changes)
       }
+      guard isRunning else { return }
 
       let syncEngine = self.syncEngines.withValue {
         zoneID.ownerName == CKCurrentUserDefaultName ? $0.private : $0.shared
@@ -1202,6 +1254,9 @@
             ?? nil
         else {
           syncEngine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
+          // MANGO 5.3b — a drop-forever leaves the queue AND the ledger, or the start drain
+          // resurrects it every launch.
+          await clearPersistedPendingRecordZoneChanges([.saveRecord(recordID)])
           return nil
         }
 
@@ -1233,6 +1288,7 @@
         guard let table = tablesByName[metadata.recordType]
         else {
           syncEngine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
+          await clearPersistedPendingRecordZoneChanges([.saveRecord(recordID)])
           missingTable = recordID
           return nil
         }
@@ -1256,6 +1312,7 @@
           guard let row
           else {
             syncEngine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
+            await clearPersistedPendingRecordZoneChanges([.saveRecord(recordID)])
             missingRecord = recordID
             return nil
           }
@@ -1721,8 +1778,19 @@
         await refreshLastKnownServerRecord(savedRecord)
       }
 
+      // MANGO 5.3b — every reported outcome, success or failure, RESOLVES its durable ledger rows;
+      // the failure handlers below then re-enqueue through the ledger (see the persist at the end),
+      // so "parked for retry" stays crash-durable while "dropped" stays dropped, matching upstream.
+      var resolvedChanges: [CKSyncEngine.PendingRecordZoneChange] = []
+      resolvedChanges.append(contentsOf: savedRecords.map { .saveRecord($0.recordID) })
+      resolvedChanges.append(contentsOf: failedRecordSaves.map { .saveRecord($0.record.recordID) })
+      resolvedChanges.append(contentsOf: deletedRecordIDs.map { .deleteRecord($0) })
+      resolvedChanges.append(contentsOf: failedRecordDeletes.keys.map { .deleteRecord($0) })
+      await clearPersistedPendingRecordZoneChanges(resolvedChanges)
+
       var newPendingRecordZoneChanges: [CKSyncEngine.PendingRecordZoneChange] = []
       var newPendingDatabaseChanges: [CKSyncEngine.PendingDatabaseChange] = []
+      let reEnqueuedDeletes = LockIsolated<[CKSyncEngine.PendingRecordZoneChange]>([])
       defer {
         syncEngine.state.add(pendingDatabaseChanges: newPendingDatabaseChanges)
         syncEngine.state.add(pendingRecordZoneChanges: newPendingRecordZoneChanges)
@@ -1948,6 +2016,7 @@
                 break
               case .batchRequestFailed:
                 syncEngine.state.add(pendingRecordZoneChanges: [.deleteRecord(failedRecordID)])
+                reEnqueuedDeletes.withValue { $0.append(.deleteRecord(failedRecordID)) }
                 break
               // MonteSprout fork (41.1): the failed-DELETE half of the same fix. A delete abandoned
               // inside an account transition leaves the record alive in the zone, so the next fetch
@@ -1957,6 +2026,7 @@
               // and this branch runs inside the enclosing write, which is no place to report from.
               case .notAuthenticated, .accountTemporarilyUnavailable:
                 syncEngine.state.add(pendingRecordZoneChanges: [.deleteRecord(failedRecordID)])
+                reEnqueuedDeletes.withValue { $0.append(.deleteRecord(failedRecordID)) }
                 break
               case .networkFailure, .networkUnavailable, .zoneBusy, .serviceUnavailable,
                 .operationCancelled, .internalError, .partialFailure,
@@ -1980,6 +2050,13 @@
           }
         }
         ?? false
+      // MANGO 5.3b — re-enqueued changes (parks, retries) write through to the ledger so they
+      // survive a process death exactly like a fresh local change would. (The fetch-side unsynced
+      // drain's re-enqueues are already durable via `UnsyncedRecordID` and deliberately not
+      // duplicated here.)
+      await persistPendingRecordZoneChanges(
+        newPendingRecordZoneChanges + reEnqueuedDeletes.withValue(\.self)
+      )
       if enqueuedUnsyncedRecordID {
         await handleFetchedRecordZoneChanges(syncEngine: syncEngine)
       }
