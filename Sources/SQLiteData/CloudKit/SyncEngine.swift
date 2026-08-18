@@ -2096,7 +2096,12 @@
         recordName: recordName,
         zoneID: CKRecordZone.ID(zoneName: zoneName, ownerName: ownerName)
       )
-      let rootRecord = try await container.privateCloudDatabase.record(for: rootRecordID)
+      // MANGO patch 11 — on a participant device the share's root record lives in the *shared*
+      // database; reading `privateCloudDatabase` unconditionally makes every participant-side
+      // share deletion ("Remove Me", owner unshare) throw `.zoneNotFound`, swallowed into a
+      // reported issue at the call site, stranding the cached share forever. Route by the
+      // record's zone owner instead (the same `database(for:)` the asset re-fetch path uses).
+      let rootRecord = try await container.database(for: rootRecordID).record(for: rootRecordID)
       try await userDatabase.write { db in
         try SyncMetadata
           .find(
