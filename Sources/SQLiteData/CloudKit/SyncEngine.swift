@@ -1514,6 +1514,28 @@
       deletions: [(zoneID: CKRecordZone.ID, reason: CKDatabase.DatabaseChange.Deletion.Reason)],
       syncEngine: any SyncEngineProtocol
     ) async {
+      // MANGO patch 12 — a zone deletion/purge is about to hard-delete every local row in the
+      // zone with no other signal; notify the delegate first, while the rows are still
+      // readable (revocation UX on a shared zone is impossible without this). The hook
+      // observes only — the purge below runs regardless. `.encryptedDataReset` re-uploads
+      // rather than deletes and does not notify.
+      if let delegate {
+        for (zoneID, reason) in deletions {
+          switch reason {
+          case .deleted, .purged:
+            await delegate.syncEngine(
+              self,
+              willDeleteRecordsInZone: zoneID,
+              scope: syncEngine.database.databaseScope,
+              reason: reason
+            )
+          case .encryptedDataReset:
+            break
+          @unknown default:
+            break
+          }
+        }
+      }
       let defaultZoneDeleted =
         await withErrorReporting(.sqliteDataCloudKitFailure) {
           try await userDatabase.write { db in

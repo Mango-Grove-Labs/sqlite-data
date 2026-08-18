@@ -146,3 +146,31 @@ neither connection was configured to survive the resulting contention (full mech
 4. **An unexplained test failure is a finding, not a baseline** (rebase procedure 4b). "Fails the same
    way on the previous branch" only dates the cause; the clean-base-tag run is what assigns it. This
    episode is the evidence: two failures sat labelled pre-existing while being one commit old.
+
+## 2026-08-17 — Phase 8 (patches 11/12): participant readiness, and the additive-API exception
+
+Trigger: MonteSprout Phase 51.1 (its collaboration-readiness audit § 5 found both library halves
+of the participant story). Both red-first on their exact mechanisms; full suite 336/336 ×2.
+
+1. **Patch 11 stays minimal — routing only.** `deleteShare`'s root-record read goes through
+   `container.database(for:)` instead of `privateCloudDatabase`; no attempt to also handle
+   "record genuinely gone" more gracefully (a removed participant may have lost read access
+   before the deletion is processed — recorded as a known limitation; 51.14's device pass
+   observes the real teardown ordering). Rejected: treating any fetch failure as "clear the
+   share anyway" — that turns a transient failure into a verdict, the exact class patches 1/4/6
+   exist to prevent.
+2. **Patch 12 is the fork's first additive public-API patch, and the preamble now says so.**
+   The old "never the public API" rule was written against *changing upstream symbols*; a
+   revocation UX is impossible without a pre-purge event, and shadowing it app-side is
+   structurally impossible (the purge is invisible by the time any consumer code runs). The
+   sanctioned shape: additive-only, default-implemented (upstream-shaped delegates compile and
+   behave unchanged), consumed by MangoSync — never imported directly by an app. Rejected:
+   a Notification/closure side-channel (a second delegate mechanism to rot); polling for zone
+   disappearance consumer-side (a race by construction).
+3. **The hook is observe-only and fires for both scopes.** It cannot veto (the zone is already
+   gone server-side); `scope` distinguishes `.shared` — cheaper than a shared-only filter the
+   next consumer would have to un-build. `.encryptedDataReset` deliberately does not notify
+   (nothing is deleted).
+4. **Phase-8 guards are neutralize-in-place from birth** — both patches share `SyncEngine.swift`
+   with the five whose bare-revert guards already rotted; writing revert-based guards for them
+   would mint two more rotted guards at the next overlapping patch.

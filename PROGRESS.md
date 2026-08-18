@@ -2,8 +2,8 @@
 
 - **Project:** sqlite-data (Mango fork of pointfreeco/sqlite-data)
 - **Target milestone:** Consumer-clearing patches done — reached (5.3a + 5.3b closed the re-open); stop for review (then Phase 4 → "Open patch work done")
-- **Status:** `milestone-reached` (Phase-5 milestone stands; the 1.10.0 retarget + patch 10 also landed on `mango/patches-1.10`, now the adopted consumer base)
-- **Updated:** 2026-08-16
+- **Status:** `milestone-reached` (Phase-5 milestone stands; the 1.10.0 retarget + patch 10 also landed on `mango/patches-1.10`, now the adopted consumer base; Phase 8 — patches 11/12 for MonteSprout 51.1 — landed on top)
+- **Updated:** 2026-08-17
 
 ---
 
@@ -50,15 +50,19 @@
   - [x] 6.4 Review + commit the retarget, push `mango/patches-1.10`
 - [x] **Phase 7 — Patch 10, from the review of the 1.10.0 retarget** _(the two `AccountLifecycleTests` failures 6.4 recorded as "pre-existing and unexplained" were 5.3b's own; root-caused in review, not by a new report)_
   - [x] 7.1 Patch 10 — metadatabase lock contention is waited out, never fatal (busy-mode inheritance + bounded ledger-write retries), and the guards + rebase procedure that let it hide; landed on `mango/patches-1.9`, cherry-picked here with the 6.0 manifest bound retuned to this base's `0.36.0`
+- [x] **Phase 8 — Sharing participant readiness (MonteSprout Phase 51.1)** _(red-first; evidence: the consumer's `docs/research/2026-08-17-collaboration-readiness-audit.md` § 5)_
+  - [x] 8.1 Patch 11 — participant `deleteShare` routes the root-record read through `database(for:)`, never `privateCloudDatabase`
+  - [x] 8.2 Patch 12 — `willDeleteRecordsInZone(scope:reason:)` delegate hook fires before a zone purge (the fork's first additive-API patch; MangoSync is the consumer)
 
 ---
 
 ## Current Status
 
-- **Current phase / sub-phase:** Phase 7 complete — patch 10 landed on `mango/patches-1.9` and cherry-picked here
-- **State:** milestone-reached (the Phase-5 milestone stop still stands; the retarget and patch 10 were requested outside the roadmap and do not move it)
-- **Last completed:** 7.1 — patch 10, metadatabase lock contention (busy-mode inheritance + bounded ledger-write retries); the four `MetadatabaseBusyModeTests` guards red-verified pre-patch
-- **Build:** green · **Tests:** green — **333 tests, ZERO failures, twice** on this branch (2026-08-15), and four consecutive zero-failure full runs on `mango/patches-1.9` · **Simulator-verified:** n/a
+- **Current phase / sub-phase:** Phase 8 complete — patches 11 + 12 (MonteSprout 51.1) on `mango/patches-1.10`
+- **State:** milestone-reached (the Phase-5 milestone stop still stands; the retarget, patch 10 and Phase 8 were requested outside this repo's roadmap and do not move it)
+- **Last completed:** 8.2 — patch 12, the `willDeleteRecordsInZone` pre-purge delegate hook; both Phase-8 guards red-verified pre-patch on their exact mechanisms (`.zoneNotFound` from the wrong database · zero notices)
+- **Build:** green · **Tests:** green — **336 tests, ZERO failures, twice** on this branch (2026-08-17) · **Simulator-verified:** n/a
+- ⚠ **Consumers do NOT carry patches 11/12 yet** — MonteSprout adopts via its 51.2b lockstep bump (with the MangoSync work of its 51.2); until then the shipped pin `e18249a` predates Phase 8, which is fine (sharing-participant paths are unreleased).
 
 **The two `AccountLifecycleTests` failures this file previously carried as "pre-existing and
 unexplained" are fixed and explained.** They were not upstream's and not the retarget's: 5.3b's
@@ -73,7 +77,9 @@ checkout of tag 1.10.0 and on a 5.3b revert — which is what identified the cau
 ## Next Concrete Action
 
 > **Resume with 4.1** — the base question that sat here is settled (see below), and nothing else in
-> this repo is waiting.
+> this repo is waiting. (MonteSprout-side: 51.2 builds MangoSync's `SharedZoneLifecycle` over
+> patch 12, and 51.2b moves every consumer pin onto the Phase-8 tip in lockstep — that work lives
+> in those repos, not here.)
 >
 > **Settled 2026-08-16: the consumer base is `mango/patches-1.10` @ `e18249a`.** Decided by action —
 > MangoSync 0.7.2 pins it and every Mango app has been bumped in lockstep to that same revision and

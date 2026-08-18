@@ -79,6 +79,35 @@
       _ syncEngine: SyncEngine,
       accountChanged changeType: CKSyncEngine.Event.AccountChange.ChangeType
     ) async
+
+    // MANGO patch 12 — an additive, default-implemented hook (upstream declares none):
+    /// An event indicating CloudKit deleted or purged an entire record zone, delivered just
+    /// *before* the sync engine hard-deletes the zone's local rows in response.
+    ///
+    /// This is the only signal a consumer gets that a zone's data is about to disappear — on a
+    /// participant device a shared zone vanishes this way when the owner stops sharing (or the
+    /// participant is removed), and without this hook that removal is silent: no event fires
+    /// and nothing can be shown to the user or cleaned up alongside it.
+    ///
+    /// The delegate is called while the zone's rows are still readable, so it may snapshot
+    /// whatever it needs (e.g. a display name for a revocation notice). It cannot veto the
+    /// deletion — the zone is already gone server-side; the local purge follows regardless.
+    /// `.encryptedDataReset` zone events re-upload rather than delete and do not call this.
+    ///
+    /// The default implementation does nothing.
+    ///
+    /// - Parameters:
+    ///   - syncEngine: The sync engine that generates the event.
+    ///   - zoneID: The zone whose local records are about to be deleted.
+    ///   - scope: The database scope the zone belongs to (`.shared` for a zone shared with the
+    ///     current user, `.private` for the user's own).
+    ///   - reason: CloudKit's stated reason (`.deleted` or `.purged`).
+    func syncEngine(
+      _ syncEngine: SyncEngine,
+      willDeleteRecordsInZone zoneID: CKRecordZone.ID,
+      scope: CKDatabase.Scope,
+      reason: CKDatabase.DatabaseChange.Deletion.Reason
+    ) async
   }
 
   @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
@@ -98,5 +127,13 @@
         break
       }
     }
+
+    // MANGO patch 12 — the default implementation: observing a zone purge is opt-in.
+    public func syncEngine(
+      _ syncEngine: SyncEngine,
+      willDeleteRecordsInZone zoneID: CKRecordZone.ID,
+      scope: CKDatabase.Scope,
+      reason: CKDatabase.DatabaseChange.Deletion.Reason
+    ) async {}
   }
 #endif

@@ -221,3 +221,20 @@ Consumer re-verified 2026-08-16: full suite ×2, zero failures.
 Still outstanding, and the reason the Phase-5 milestone stays provisional: the 1.0(17) **device-matrix
 re-run on hardware**, including the S5 step the durable ledger exists for. The 2026-08-16 verification
 was the test suite, not the matrix. Tracked consumer-side.
+
+## 2026-08-17 — Phase 8: patches 11 + 12 (participant readiness for MonteSprout 51.1)
+
+The consumer's collaboration-readiness audit found the two library halves of its participant
+story, both fixed here, red-first. **Patch 11** — `deleteShare` re-fetched the share's root
+record from `container.privateCloudDatabase` unconditionally; on a participant that record lives
+in the shared database, so every participant-side share deletion ("Remove Me", owner unshare)
+threw `.zoneNotFound` into a swallowed report and stranded the cached share. One line: route via
+`container.database(for:)`. **Patch 12** — a zone `.deleted`/`.purged` event hard-deleted every
+local row with no signal; `SyncEngineDelegate` gains `willDeleteRecordsInZone(scope:reason:)`,
+called per zone *before* the purge while rows are still readable — the fork's **first additive
+public-API patch** (default-implemented; preamble amended; MangoSync's `SharedZoneLifecycle` is
+the consumer). Guards: `ParticipantShareDeletionTests` (red pre-patch on the exact `.zoneNotFound`
+mechanism) and `ZonePurgeDelegateTests` (red on zero notices; `.encryptedDataReset` boundary
+green by construction; an in-hook probe pins the "before purge" timing). Full suite 336/336,
+zero failures, twice. Consumers adopt via MonteSprout 51.2b's lockstep bump — the shipped pin
+`e18249a` predates Phase 8 deliberately.

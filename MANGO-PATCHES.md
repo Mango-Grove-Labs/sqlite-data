@@ -2,9 +2,12 @@
 
 This fork (`Mango-Grove-Labs/sqlite-data`) is the **org-wide vehicle for library-level fixes**
 to [pointfreeco/sqlite-data](https://github.com/pointfreeco/sqlite-data). It is fully
-API-compatible with upstream — no app imports a fork-only symbol; patches change behavior or the
-dependency manifest, never the public API. Library bugs get fixed **here**, never re-implemented
-or shadowed in an app or wrapper package.
+API-compatible with upstream — patches change behavior or the dependency manifest and never
+alter an upstream-declared symbol. **One sanctioned exception class: additive,
+default-implemented API** (so far only patch 12's delegate hook) — code written against
+upstream compiles unchanged, and the new surface is consumed by **MangoSync**, the org's
+wrapper package, never imported directly by an app. Library bugs get fixed **here**, never
+re-implemented or shadowed in an app or wrapper package.
 
 **Consumer branch: `mango/patches-1.10`** — upstream tag `1.10.0` + the patches below.
 (Previous: `mango/patches-1.9` = tag `1.9.0`, `mango/patches-1.6` = tag `1.6.6` — same stack, kept
@@ -471,6 +474,75 @@ swallowed-failure path. That is the pre-existing behavior, not a new one.
   branch is pre-existing; that is not the same as being upstream's.** Running them against a clean
   checkout of the base tag (where they pass) is what separates the two.
 
+### 11. `deleteShare` must read the root record from the record's own database, never `privateCloudDatabase`
+
+*MonteSprout Phase 51.1 — participant readiness; evidence: the consumer's
+`docs/research/2026-08-17-collaboration-readiness-audit.md` § 5.4.*
+
+When a `cloudkit.share` record's deletion arrives in a fetch (the owner stopped sharing, or the
+participant tapped `UICloudSharingController`'s "Remove Me"), `handleFetchedRecordZoneChanges`
+routes it to `deleteShare(shareRecordID:)`, which re-fetches the share's **root record** to
+refresh the metadata and clear the cached share. Upstream reads that root record from
+`container.privateCloudDatabase` unconditionally — but on a **participant** device the root
+record lives in a zone owned by someone else, i.e. in the **shared** database. The read throws
+`.zoneNotFound`, the call site's `withErrorReporting` swallows it into a reported issue, and the
+stale share (with its participant list) stays cached in `SyncMetadata.share` forever. Every
+participant-side share teardown hits this; it is why "Remove Me" silently fails.
+
+The patch is one line: route through `container.database(for: rootRecordID)` (the existing
+owner-name router the asset re-fetch path already uses) instead of `privateCloudDatabase`.
+Owner-side behavior is unchanged — an owned zone's `ownerName` is `CKCurrentUserDefaultName`,
+which routes to the private database exactly as before.
+
+Known limitation (accepted): on real CloudKit a participant who was *removed* may have already
+lost read access to the shared zone by the time the deletion is processed — the re-fetch then
+throws there too, and the share stays cached until the zone purge that follows deletes the whole
+metadata row. The patch fixes the mechanism the library controls (the wrong database); the
+real-device teardown ordering is 51.14's device pass to observe.
+
+- **`ParticipantShareDeletionTests`** — accepts an externally-owned share (the `acceptShare`
+  idiom), then delivers the share record's deletion on the shared engine and asserts the cached
+  share is cleared, the server record stays known, no issue is reported, and the local row
+  survives (the share cache is the only thing touched). Red-verified pre-patch 2026-08-17: the
+  wrong-database read surfaces as the recorded `.zoneNotFound` (CKError 26) issue plus the stale
+  cached share.
+
+### 12. A zone deletion/purge notifies the delegate before the local purge
+
+*MonteSprout Phase 51.1 — the prerequisite for any revocation UX; same evidence base as § 11.*
+
+`handleFetchedDatabaseChanges` reacts to a zone-level `.deleted`/`.purged` event by hard-deleting
+every local row in that zone (and, downstream, the FK cascades a consumer schema hangs off those
+rows). For a participant whose share was revoked this is **silent annihilation**: upstream's
+`SyncEngineDelegate` has exactly one method (`accountChanged`), so no event fires, nothing can be
+shown to the user, and nothing can be cleaned up alongside the purge (a consumer's private-table
+rows cascade away locally while their CKRecords orphan in the consumer's own private zone).
+
+The patch adds one **additive, default-implemented** delegate method — the fork's first public
+API addition (see the preamble; MangoSync's `SharedZoneLifecycle` is the consumer):
+
+```swift
+func syncEngine(
+  _ syncEngine: SyncEngine,
+  willDeleteRecordsInZone zoneID: CKRecordZone.ID,
+  scope: CKDatabase.Scope,
+  reason: CKDatabase.DatabaseChange.Deletion.Reason
+) async
+```
+
+Called once per `.deleted`/`.purged` zone **before** the purge write, while the zone's rows are
+still readable — so the consumer can snapshot what it needs (a room name for the notice) and
+schedule its own cleanup. Observe-only: the purge runs regardless (the zone is already gone
+server-side). It fires for both scopes — a consumer distinguishes via `scope` (`.shared` = a
+zone shared with the current user); `.encryptedDataReset` re-uploads rather than deletes and
+does not notify. The default implementation is a no-op, so upstream-shaped delegates compile
+and behave unchanged.
+
+- **`ZonePurgeDelegateTests`** — a shared-zone purge delivers exactly one notice (zone, owner,
+  `.shared`, purge) and a probe run *inside* the hook still sees the zone's rows, while the rows
+  are gone after the handler returns; and `.encryptedDataReset` stays silent with rows intact.
+  Red-verified pre-patch 2026-08-17 (zero notices; the boundary test green by construction).
+
 ### Characterization — what a "waiting to upload" count derived from `lastKnownServerRecord` cannot see
 
 *MonteSprout Phase 41.2a — no library change; a pinned fact consumers build on.*
@@ -615,6 +687,10 @@ declares it unbounded (`from: "0.36.0"`), so patch 3 is still ours to carry. Not
    removal is the piece a conflict resolved by taking upstream silently reverts)**, **patch 10 (the
    metadatabase busy mode + the ledger-write retries — its logic lives in the Mango-owned
    `CloudKit/Internal/MetadatabaseBusyMode.swift`, so only the three one-line call sites can conflict)**,
+   **patch 11 (the one-line `database(for:)` routing in `deleteShare`)**, **patch 12 (the
+   `willDeleteRecordsInZone` delegate hook — protocol method + default impl in
+   `SyncEngineDelegate.swift`, notify loop at the top of `handleFetchedDatabaseChanges`; a conflict
+   resolved by taking upstream's `SyncEngineDelegate.swift` silently drops the whole API)**,
    the test
    commits (take them from the tip of the previous `mango/patches-*` branch). Resolve conflicts by **idiom, not line
    number** — the `SyncEngine` error-handling region drifts. Patch 3 conflicts every time, because the
@@ -672,11 +748,22 @@ declares it unbounded (`from: "0.36.0"`), so patch 3 is still ours to carry. Not
      `aHeldWriteLockIsWaitedOutRatherThanFailingImmediately` and
      `theEnginesMetadatabaseConnectionWaitsForALock`, while `theHostsOwnBusyTimeoutIsInheritedVerbatim`
      stays green (it pins the other half); restore → green.
+   - Neutralize patch 11 in place (put `deleteShare`'s root-record read back on
+     `container.privateCloudDatabase`) → `swift test --filter ParticipantShareDeletionTests` must go
+     **red** on `aShareDeletionOnAParticipantClearsTheCachedShare` (a recorded `.zoneNotFound` issue
+     plus the stale cached share); restore → green. (Neutralize-in-place from the start — this patch
+     shares `SyncEngine.swift` with the five whose bare reverts already rot.)
+   - Neutralize patch 12 in place (delete the notify loop at the top of
+     `handleFetchedDatabaseChanges`) → `swift test --filter ZonePurgeDelegateTests` must go **red** on
+     `aSharedZonePurgeNotifiesTheDelegateBeforeDeletingLocalRows` (zero notices), while
+     `anEncryptedDataResetDoesNotNotifyTheDelegate` stays green (it pins the boundary); restore →
+     green.
 
    A rebase that skips these can silently drop a guard. **Before running any of them, read
-   "Guard executability" above** — only five of the ten still revert cleanly (patch 10's is the
-   fifth), and the byte-identity check described there is the check that actually rules out a
-   dropped patch.
+   "Guard executability" above** — of the pre-Phase-8 guards only five still revert cleanly
+   (patch 10's is the fifth); patches 11 and 12 are **neutralize-in-place by definition** (above)
+   and don't rot the same way. The byte-identity check described there is the check that actually
+   rules out a dropped patch.
 
    ⚠️ **Run every guard at the branch TIP, by neutralizing the mechanism in place — never by checking
    out a mid-stack commit.** The stack is not buildable commit-by-commit: patch 3 replays with the
