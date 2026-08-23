@@ -4,9 +4,9 @@ This fork (`Mango-Grove-Labs/sqlite-data`) is the **org-wide vehicle for library
 to [pointfreeco/sqlite-data](https://github.com/pointfreeco/sqlite-data). It is fully
 API-compatible with upstream — patches change behavior or the dependency manifest and never
 alter an upstream-declared symbol. **One sanctioned exception class: additive,
-default-implemented API** (so far only patch 12's delegate hook) — code written against
-upstream compiles unchanged, and the new surface is consumed by **MangoSync**, the org's
-wrapper package, never imported directly by an app. Library bugs get fixed **here**, never
+default-implemented API** (so far the two `SyncEngineDelegate` hooks of patches 12 and 13) — code
+written against upstream compiles unchanged, and the new surface is consumed by **MangoSync**, the
+org's wrapper package, never imported directly by an app. Library bugs get fixed **here**, never
 re-implemented or shadowed in an app or wrapper package.
 
 **Consumer branch: `mango/patches-1.10`** — upstream tag `1.10.0` + the patches below.
@@ -543,6 +543,83 @@ and behave unchanged.
   are gone after the handler returns; and `.encryptedDataReset` stays silent with rows intact.
   Red-verified pre-patch 2026-08-17 (zero notices; the boundary test green by construction).
 
+⚠️ **Patch 12 alone does not deliver the revocation it was built for — see patch 13.** On real
+CloudKit a revoked participant never receives a zone deletion; the whole hook was reached only by
+the purge case (a zone the owner deleted outright).
+
+### 13. A revoked participant is told by RECORD deletions, not a zone deletion
+
+*MonteSprout Phase 55.2b — the fix round the first two-account device session forced; evidence:
+the consumer's `docs/research/2026-08-23-two-account-session-findings.md` finding **F13**.*
+
+Patch 12 hangs the revocation signal off `handleFetchedDatabaseChanges`, on the assumption that
+losing access to someone else's record arrives as a zone deletion/purge. Instrumented on hardware
+over three consecutive revocations, it does not. The zone belongs to the **owner** and survives; the
+participant's shared engine gets `fetchedDatabaseChanges: ✅ Modified zone` followed by
+`fetchedRecordZoneChanges: 🗑️ Deleted <rootRecordType> <root>`, `🗑️ Deleted cloudkit.share`. So
+`willDeleteRecordsInZone` never fired, the library hard-deleted the root record (and the consumer
+schema's `ON DELETE CASCADE` took the entire hierarchy with it) with **no event of any kind**, and
+the notice the consumer builds on that hook could not be minted. Patch 12's hook was only ever
+reachable for the zone-purge case — an owner deleting a whole zone — which is not what stopping a
+share does.
+
+The patch adds a **second** additive, default-implemented delegate method — the fork's only other
+API addition after patch 12's — and fires it from the top of `handleFetchedRecordZoneChanges`
+(`notifyRevokedShareTeardown`), once per zone, ahead of every local delete below it:
+
+```swift
+func syncEngine(
+  _ syncEngine: SyncEngine,
+  willDeleteSharedRootRecords rootRecordIDs: [CKRecord.ID],
+  inZone zoneID: CKRecordZone.ID
+) async
+```
+
+**Why a new method rather than reusing the zone hook — the review's own finding.** The obvious fix
+(fire `willDeleteRecordsInZone` for the share's zone) is wrong, and destructively so. One owner zone
+holds **every** hierarchy that owner shares out of it, so a participant given two records from the
+same zone sees them in ONE shared zone; revoking one says nothing about the other. A zone-granular
+notice would tell a consumer to sweep the record it still has — announcing a loss that did not
+happen and deleting the local rows it hangs off that record (in MonteSprout: a co-teacher's own
+private notes about a classroom she still has). The signal has to name the roots that actually went.
+The default implementation is therefore a **no-op, never a forward to the zone hook**, for the same
+reason: silence until a consumer adopts is recoverable, a zone-wide sweep is not.
+
+Three properties carry the correctness, each with a test that fails without it:
+
+- **`.shared` scope only.** The identical pair of deletions reaches the **owner's private** engine
+  when *she* stops sharing. Notifying there tells a lead her own room was taken away — the exact
+  mirror of the bug. Nothing else separates the two events.
+- **Roots only, never any row in the zone.** A deletion is a teardown only if it *is* a root this
+  device holds a share for, or *is* that root's cached `cloudkit.share`. Anything else — the owner
+  deleting one child row inside a still-shared room — is silent.
+- **Both halves, because CloudKit may split the pair across fetch batches.** If only the root
+  arrives, the notice must be minted then: by the time the share's deletion turns up in a later
+  batch the record and everything readable about it are already gone, which is the same silent
+  annihilation one batch further along.
+
+The shared-root set is read from `SyncMetadata.where(\.isShared)` and matched in Swift (the share is
+an archived blob — the same reason `deleteShare` reads it that way). Observe-only, like patch 12: the
+deletions run regardless. An unreadable metadatabase reports through `withErrorReporting` and
+notifies nothing — there is no honest partial answer, since both halves are identified by that read.
+
+- **`SharedRecordRevocationDelegateTests`** — the revocation pair notifies once, naming the root,
+  with a probe *inside* the hook proving the row is still readable and gone after it returns; a
+  root-only batch still notifies; **one of two rooms in a zone names only the revoked root** while
+  the other room's rows survive; an ordinary child deletion in a still-shared zone stays silent; and
+  the owner's own unshare (same two records, private scope) stays silent. Red-verified pre-patch
+  2026-08-23 (positive tests at zero notices). ⚠️ The negative tests are **green by construction
+  pre-patch**, so each was separately proven non-vacuous by mutating the shipped patch: dropping the
+  scope guard reddens the owner's-unshare test; matching by zone instead of by root reddens both the
+  child-deletion test and the two-rooms test. An earlier draft of the private-scope test deleted an
+  *unshared* record and passed with the scope guard deleted — the share is created in it on purpose.
+
+**Consumer notes (not library concerns).** (a) Patch 13 is **inert until a consumer implements the
+new method** — MangoSync's `SharedZoneLifecycle` and its host both need the record-granular shape,
+so bumping the pin alone does not restore a revocation notice. (b) A participant who leaves
+voluntarily produces this same event shape, so a host that shows "you were removed from X" will show
+it after her own tap unless it suppresses the notice for a leave it initiated.
+
 ### Characterization — what a "waiting to upload" count derived from `lastKnownServerRecord` cannot see
 
 *MonteSprout Phase 41.2a — no library change; a pinned fact consumers build on.*
@@ -691,6 +768,10 @@ declares it unbounded (`from: "0.36.0"`), so patch 3 is still ours to carry. Not
    `willDeleteRecordsInZone` delegate hook — protocol method + default impl in
    `SyncEngineDelegate.swift`, notify loop at the top of `handleFetchedDatabaseChanges`; a conflict
    resolved by taking upstream's `SyncEngineDelegate.swift` silently drops the whole API)**,
+   **patch 13 (the record-deletion revocation notice — the second `SyncEngineDelegate` method +
+   default impl in `SyncEngineDelegate.swift`, `notifyRevokedShareTeardown` plus its one call at the
+   top of `handleFetchedRecordZoneChanges`; same conflict trap as patch 12, and without it patch 12
+   is an API that fires for nothing a participant ever sees)**,
    the test
    commits (take them from the tip of the previous `mango/patches-*` branch). Resolve conflicts by **idiom, not line
    number** — the `SyncEngine` error-handling region drifts. Patch 3 conflicts every time, because the

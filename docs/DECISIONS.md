@@ -174,3 +174,30 @@ of the participant story). Both red-first on their exact mechanisms; full suite 
 4. **Phase-8 guards are neutralize-in-place from birth** — both patches share `SyncEngine.swift`
    with the five whose bare-revert guards already rotted; writing revert-based guards for them
    would mint two more rotted guards at the next overlapping patch.
+
+## 2026-08-23 — Phase 9 (patch 13): the revocation signal is record-granular, not zone-granular
+
+1. **The event shape is settled by hardware, not by reading CloudKit's docs.** MonteSprout's
+   two-account session instrumented three consecutive revocations: `✅ Modified zone`, then
+   `🗑️ Deleted <root>` + `🗑️ Deleted cloudkit.share`. Patch 12's premise — that losing access to
+   someone else's record arrives as a zone deletion — is simply false on real CloudKit. Patch 12 is
+   kept (a zone the owner deletes or purges outright still arrives that way) but it is **not** the
+   revocation hook, and anything written as if it were is wrong.
+2. **A second delegate method, not a reuse of patch 12's.** The consumer's own finding recommended
+   firing the existing zone hook, and the first implementation did. Review rejected it: one owner
+   zone holds every hierarchy that owner shares out of it, so a participant given two records from
+   the same zone sees them in one shared zone, and revoking one is not a fact about the zone. A
+   zone-granular notice makes a consumer sweep the record it still has — in MonteSprout, deleting a
+   co-teacher's own private notes about a classroom that is still hers and telling her she lost it.
+   `willDeleteSharedRootRecords:inZone:` names the roots that actually went.
+3. **Its default implementation is a no-op, deliberately not a forward to the zone hook.** A forward
+   would give unadopted consumers the destructive behaviour of dec. 2 for free. Silence until a
+   consumer adopts is recoverable; a zone-wide sweep is not. The cost is stated plainly: patch 13 is
+   inert until MangoSync and its host implement the method.
+4. **The additive-API exception is now two hooks, and that is the stopping point.** Both are
+   `SyncEngineDelegate` methods with default implementations, both consumed through MangoSync. The
+   preamble's exception class is amended to say "the two hooks", not "patch 12's hook".
+5. **A negative test on a hook is assumed vacuous until proven otherwise.** All three of this
+   patch's silence guards passed pre-patch. Each was proven by mutating the *shipped* patch — and
+   the first draft of the private-scope test survived deleting the guard it existed for, because it
+   deleted an unshared record. Write the mutation down beside the test.

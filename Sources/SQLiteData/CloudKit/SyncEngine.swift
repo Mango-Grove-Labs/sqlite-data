@@ -1617,6 +1617,10 @@
       deletions: [(recordID: CKRecord.ID, recordType: CKRecord.RecordType)] = [],
       syncEngine: any SyncEngineProtocol
     ) async {
+      // MANGO patch 13 — a revoked participant is told by RECORD deletions, not a zone deletion,
+      // so patch 12's pre-purge hook never fires for the case it was built for. Notify here too,
+      // before anything below deletes a row. See `notifyRevokedShareTeardown`.
+      await notifyRevokedShareTeardown(deletions: deletions, syncEngine: syncEngine)
       let deletedRecordIDsByRecordType = OrderedDictionary(
         grouping: deletions.sorted { lhs, rhs in
           topologicallyAscending(
@@ -1773,6 +1777,88 @@
             }
           }
         }
+      }
+    }
+
+    // MANGO PATCH 13 — a revoked participant's zone is not deleted; its records are.
+    //
+    // Patch 12 hangs the only revocation signal a consumer gets off `handleFetchedDatabaseChanges`,
+    // on the assumption that losing access to someone else's record arrives as a zone
+    // deletion/purge. On real CloudKit it does not: the zone belongs to the owner and stays, and
+    // what lands on the participant's *shared* engine is a pair of ordinary record deletions — the
+    // hierarchy's root record and its `cloudkit.share` — inside a zone reported as merely
+    // *modified*. So the hook never fired, the root row was hard-deleted (and a consumer schema's
+    // `ON DELETE CASCADE` took the whole room with it) with no event of any kind, and the notice a
+    // teacher should have seen could not be minted. Measured on hardware, three revocations in a
+    // row, MonteSprout Phase 55.2 finding F13.
+    //
+    // It reports **root record IDs**, not a zone, and that is the whole design decision. One owner
+    // zone holds every hierarchy that owner shares out of it, so a participant given two records
+    // from the same zone sees them in ONE shared zone — and losing one says nothing about the
+    // other. A zone-granular notice here would tell a consumer to sweep the record it still has:
+    // announce a loss that did not happen, and delete the local rows it hangs off that record.
+    // Hence patch 13's own delegate method (`willDeleteSharedRootRecords:inZone:`, additive and
+    // default-implemented like patch 12's) rather than a reuse of the zone hook.
+    //
+    // Two more things it is deliberately careful about:
+    //
+    //   - **Only `.shared`.** The same pair of deletions reaches the *owner's* private engine when
+    //     she stops sharing, where it means the opposite; and an ordinary record deletion in her own
+    //     zone is a delete-from-another-device.
+    //   - **Both halves of the pair, because CloudKit may split it across fetch batches.** A share
+    //     record's deletion names its root through the share cached against that root's metadata;
+    //     a root record's deletion is recognised by the same cached share. If only the root arrives,
+    //     the notice must be minted then — by the time the share's own deletion turns up the record
+    //     and everything readable about it are already gone.
+    //
+    // Observe-only, like patch 12: the deletions below run regardless. Fired once per zone, ahead
+    // of any local delete, while the rows are still readable — which is the whole value of it, and
+    // what the consumer's own ordering alarm (MonteSprout 54.12) checks from the other side.
+    private func notifyRevokedShareTeardown(
+      deletions: [(recordID: CKRecord.ID, recordType: CKRecord.RecordType)],
+      syncEngine: any SyncEngineProtocol
+    ) async {
+      guard
+        let delegate,
+        syncEngine.database.databaseScope == .shared,
+        !deletions.isEmpty
+      else { return }
+
+      // Every hierarchy this device holds a share for. The share is an archived blob, so the match
+      // is made in Swift rather than SQL — the same reason `deleteShare` reads it this way — and
+      // the set is one row per shared record, not per row in the zone.
+      let sharedRoots =
+        await withErrorReporting(.sqliteDataCloudKitFailure) {
+          try await metadatabase.read { db in
+            try SyncMetadata
+              .where(\.isShared)
+              .select { ($0.share, $0.recordName, $0.zoneName, $0.ownerName) }
+              .fetchAll(db)
+          }
+        } ?? []
+      guard !sharedRoots.isEmpty else { return }
+
+      let deletedRecordIDs = Set(deletions.map(\.recordID))
+      var rootsByZone: [CKRecordZone.ID: [CKRecord.ID]] = [:]
+      var zoneOrder: [CKRecordZone.ID] = []
+      for (share, recordName, zoneName, ownerName) in sharedRoots {
+        let zoneID = CKRecordZone.ID(zoneName: zoneName, ownerName: ownerName)
+        let rootRecordID = CKRecord.ID(recordName: recordName, zoneID: zoneID)
+        // Either half identifies the same teardown: the root going, or its share going.
+        guard
+          deletedRecordIDs.contains(rootRecordID)
+            || share.map({ deletedRecordIDs.contains($0.recordID) }) == true
+        else { continue }
+        if rootsByZone[zoneID] == nil { zoneOrder.append(zoneID) }
+        rootsByZone[zoneID, default: []].append(rootRecordID)
+      }
+
+      for zoneID in zoneOrder {
+        await delegate.syncEngine(
+          self,
+          willDeleteSharedRootRecords: rootsByZone[zoneID] ?? [],
+          inZone: zoneID
+        )
       }
     }
 

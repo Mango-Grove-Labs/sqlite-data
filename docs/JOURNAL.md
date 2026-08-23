@@ -238,3 +238,32 @@ mechanism) and `ZonePurgeDelegateTests` (red on zero notices; `.encryptedDataRes
 green by construction; an in-hook probe pins the "before purge" timing). Full suite 336/336,
 zero failures, twice. Consumers adopt via MonteSprout 51.2b's lockstep bump — the shipped pin
 `e18249a` predates Phase 8 deliberately.
+
+## 2026-08-23 — Phase 9: patch 13 (the revocation notice that never fired)
+
+MonteSprout's first two-account device session (its 55.2) proved patch 12 could not do the job it
+was built for. A revoked participant is **not** told by a zone deletion — the zone belongs to the
+owner and survives. Instrumented over three consecutive revocations, what arrives on her shared
+engine is `✅ Modified zone` followed by two record deletions: the hierarchy's root and
+`cloudkit.share`. So the hook never fired, the root row was hard-deleted (the consumer's FK cascade
+taking the whole classroom with it), and nothing could be shown to the teacher — the silence patch
+12 exists to end, one layer down.
+
+**Patch 13** fires from the top of `handleFetchedRecordZoneChanges`, once per zone, ahead of every
+delete below it. The first draft reused patch 12's zone hook, which is what the consumer's finding
+had recommended; **review killed that**, and the reason is the patch's whole shape: one owner zone
+holds every hierarchy that owner shares out of it, so revoking one room in a zone says nothing about
+the other room in it — a zone-granular notice tells the consumer to sweep a room the participant
+still has, deleting her own private rows about it. So patch 13 adds the fork's second additive
+delegate method, `willDeleteSharedRootRecords:inZone:`, naming the roots that actually went; its
+default implementation is a no-op rather than a forward to the zone hook, for the same reason.
+A deletion counts only if it is a root this device holds a share for, or that root's cached share —
+both halves, since CloudKit may split the pair across fetch batches — and only in `.shared` scope,
+because the identical pair reaches the **owner's** private engine when she stops sharing.
+
+Guard: `SharedRecordRevocationDelegateTests`, red pre-patch on the positive tests. Its negative tests
+are green by construction, so each was proven non-vacuous by mutating the shipped patch — matching by
+zone instead of by root reddens both the child-deletion and the two-rooms test; dropping the scope
+guard reddens the owner's-unshare test (an earlier draft of which deleted an *unshared* record and
+proved nothing). Full suite 341/341. ⚠ Patch 13 is **inert until MangoSync and its host implement
+the new method** — a pin bump alone restores no notice; that adoption is MonteSprout's own next slice.

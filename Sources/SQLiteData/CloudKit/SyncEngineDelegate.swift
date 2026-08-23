@@ -108,6 +108,42 @@
       scope: CKDatabase.Scope,
       reason: CKDatabase.DatabaseChange.Deletion.Reason
     ) async
+
+    // MANGO patch 13 — the sibling the hook above turned out to need (upstream declares neither):
+    /// An event indicating that access to one or more **shared record hierarchies** has ended,
+    /// delivered just *before* the sync engine hard-deletes their local rows in response.
+    ///
+    /// This is the shape a revocation actually takes on CloudKit, and it is **not** the zone event
+    /// above. A participant's shared zone belongs to the owner and survives a revocation; what
+    /// arrives is the deletion of the hierarchy's root record and its `cloudkit.share`. The zone
+    /// hook only ever fires for a zone the owner deleted or purged outright.
+    ///
+    /// It reports **root record IDs**, not a zone, because one owner zone holds every hierarchy
+    /// that owner shares out of it: a participant given two records from the same zone sees them
+    /// both in one shared zone, and losing one says nothing about the other. Acting on the zone
+    /// would destroy local data belonging to a record the participant still has.
+    ///
+    /// The delegate is called while those rows are still readable, so it may snapshot whatever it
+    /// needs (a display name for a removal notice) and clean up alongside — a consumer's own
+    /// private rows hanging off a shared record by foreign key are deleted locally by the cascade
+    /// but stay behind in the consumer's own zone unless removed here. It cannot veto the
+    /// deletion; access is already gone server-side.
+    ///
+    /// Only `.shared`-scope deletions reach this. The identical pair of record deletions arrives on
+    /// the **owner's private** engine when she stops sharing, where it means the opposite thing.
+    ///
+    /// The default implementation does nothing.
+    ///
+    /// - Parameters:
+    ///   - syncEngine: The sync engine that generates the event.
+    ///   - rootRecordIDs: The shared hierarchies' root records, whose local rows (and everything
+    ///     the consumer's schema cascades off them) are about to be deleted.
+    ///   - zoneID: The shared zone those roots live in. The zone itself is **not** going away.
+    func syncEngine(
+      _ syncEngine: SyncEngine,
+      willDeleteSharedRootRecords rootRecordIDs: [CKRecord.ID],
+      inZone zoneID: CKRecordZone.ID
+    ) async
   }
 
   @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
@@ -134,6 +170,17 @@
       willDeleteRecordsInZone zoneID: CKRecordZone.ID,
       scope: CKDatabase.Scope,
       reason: CKDatabase.DatabaseChange.Deletion.Reason
+    ) async {}
+
+    // MANGO patch 13 — the default implementation. Deliberately a no-op rather than a forward to
+    // the zone hook above: forwarding would hand a consumer a zone-wide event for the loss of one
+    // hierarchy, and a consumer that acts on it (sweeping its own rows for every record in the
+    // zone) would destroy data for records it still has. Silence until adopted is recoverable;
+    // that is not.
+    public func syncEngine(
+      _ syncEngine: SyncEngine,
+      willDeleteSharedRootRecords rootRecordIDs: [CKRecord.ID],
+      inZone zoneID: CKRecordZone.ID
     ) async {}
   }
 #endif

@@ -128,6 +128,9 @@
       var ownerName: String
       var scope: CKDatabase.Scope
       var isPurge: Bool
+      /// Non-nil only for MANGO patch 13's record-granular notice — the roots that actually went.
+      /// `nil` is patch 12's zone event, where the whole zone is going.
+      var rootRecordIDs: [CKRecord.ID]?
     }
     let notices = LockIsolated<[Notice]>([])
     let probe = LockIsolated<(@Sendable () async -> Int)?>(nil)
@@ -152,6 +155,29 @@
             ownerName: zoneID.ownerName,
             scope: scope,
             isPurge: isPurge
+          )
+        )
+      }
+      if let probe = probe.withValue(\.self) {
+        let count = await probe()
+        rowCountAtNotice.withValue { $0 = count }
+      }
+    }
+
+    @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
+    func syncEngine(
+      _ syncEngine: SQLiteData.SyncEngine,
+      willDeleteSharedRootRecords rootRecordIDs: [CKRecord.ID],
+      inZone zoneID: CKRecordZone.ID
+    ) async {
+      notices.withValue {
+        $0.append(
+          Notice(
+            zoneName: zoneID.zoneName,
+            ownerName: zoneID.ownerName,
+            scope: .shared,
+            isPurge: false,
+            rootRecordIDs: rootRecordIDs
           )
         )
       }

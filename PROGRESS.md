@@ -2,8 +2,8 @@
 
 - **Project:** sqlite-data (Mango fork of pointfreeco/sqlite-data)
 - **Target milestone:** Consumer-clearing patches done — reached (5.3a + 5.3b closed the re-open); stop for review (then Phase 4 → "Open patch work done")
-- **Status:** `milestone-reached` (Phase-5 milestone stands; the 1.10.0 retarget + patch 10 also landed on `mango/patches-1.10`, now the adopted consumer base; Phase 8 — patches 11/12 for MonteSprout 51.1 — landed on top)
-- **Updated:** 2026-08-17
+- **Status:** `milestone-reached` (Phase-5 milestone stands; the 1.10.0 retarget + patch 10 also landed on `mango/patches-1.10`, now the adopted consumer base; Phase 8 — patches 11/12 for MonteSprout 51.1 — and Phase 9 — patch 13 for its 55.2b — landed on top)
+- **Updated:** 2026-08-23
 
 ---
 
@@ -53,16 +53,20 @@
 - [x] **Phase 8 — Sharing participant readiness (MonteSprout Phase 51.1)** _(red-first; evidence: the consumer's `docs/research/2026-08-17-collaboration-readiness-audit.md` § 5)_
   - [x] 8.1 Patch 11 — participant `deleteShare` routes the root-record read through `database(for:)`, never `privateCloudDatabase`
   - [x] 8.2 Patch 12 — `willDeleteRecordsInZone(scope:reason:)` delegate hook fires before a zone purge (the fork's first additive-API patch; MangoSync is the consumer)
+- [x] **Phase 9 — The revocation event shape (MonteSprout Phase 55.2b)** _(red-first; evidence: the consumer's `docs/research/2026-08-23-two-account-session-findings.md` § F13)_
+  - [x] 9.1 Patch 13 — a revoked participant is told by RECORD deletions, not a zone deletion → the fork's second additive delegate method, `willDeleteSharedRootRecords:inZone:` (review rejected reusing the zone hook: one owner zone holds several shared hierarchies)
 
 ---
 
 ## Current Status
 
-- **Current phase / sub-phase:** Phase 8 complete — patches 11 + 12 (MonteSprout 51.1) on `mango/patches-1.10`
-- **State:** milestone-reached (the Phase-5 milestone stop still stands; the retarget, patch 10 and Phase 8 were requested outside this repo's roadmap and do not move it)
-- **Last completed:** 8.2 — patch 12, the `willDeleteRecordsInZone` pre-purge delegate hook; both Phase-8 guards red-verified pre-patch on their exact mechanisms (`.zoneNotFound` from the wrong database · zero notices)
-- **Build:** green · **Tests:** green — **336 tests, ZERO failures, twice** on this branch (2026-08-17) · **Simulator-verified:** n/a
-- ⚠ **Consumers do NOT carry patches 11/12 yet** — MonteSprout adopts via its 51.2b lockstep bump (with the MangoSync work of its 51.2); until then the shipped pin `e18249a` predates Phase 8, which is fine (sharing-participant paths are unreleased).
+- **Current phase / sub-phase:** Phase 9 complete — patch 13 (MonteSprout 55.2b) on `mango/patches-1.10`
+- **State:** milestone-reached (the Phase-5 milestone stop still stands; the retarget, patch 10 and Phases 8–9 were requested outside this repo's roadmap and do not move it)
+- **Last completed:** 9.1 — patch 13, the record-granular revocation notice. Red-verified pre-patch on the positive tests; the negative tests are green by construction and were each proven non-vacuous by mutating the shipped patch (match by zone instead of by root → the child-deletion and two-rooms tests redden; drop the scope guard → the owner's-unshare test reddens).
+- **Build:** green · **Tests:** green — **341 tests, ZERO failures** on this branch (2026-08-23) · **Simulator-verified:** n/a
+- ⚠ **Patch 13 is INERT until a consumer implements `willDeleteSharedRootRecords:inZone:`** — a pin bump alone restores no revocation notice. MangoSync's `SharedZoneLifecycle` and its host both need the record-granular shape; that adoption is MonteSprout's own 55.2b slice. The shipped pin `c97c703` is the Phase-8 tip.
+- ⚠ **Patch 12 alone is inert for the case it was written for.** Real CloudKit never deletes a revoked participant's zone, so that hook only ever fires for a zone the owner deleted or purged outright. Never read it as the revocation signal.
+- ⚠ **Never make patch 13's default implementation forward to patch 12's hook.** One owner zone holds every hierarchy she shares out of it, so a zone-wide notice for the loss of one hierarchy makes a consumer destroy local data for records it still has. That is why the two hooks stay separate.
 
 **The two `AccountLifecycleTests` failures this file previously carried as "pre-existing and
 unexplained" are fixed and explained.** They were not upstream's and not the retarget's: 5.3b's
@@ -77,9 +81,11 @@ checkout of tag 1.10.0 and on a 5.3b revert — which is what identified the cau
 ## Next Concrete Action
 
 > **Resume with 4.1** — the base question that sat here is settled (see below), and nothing else in
-> this repo is waiting. (MonteSprout-side: 51.2 builds MangoSync's `SharedZoneLifecycle` over
-> patch 12, and 51.2b moves every consumer pin onto the Phase-8 tip in lockstep — that work lives
-> in those repos, not here.)
+> this repo is waiting. (MonteSprout-side: its 55.2b round still owes the **F4** half — the patch-7
+> mirror is not stamped on the shared-zone save/fetch paths, so "Unsent edits" reads a device's whole
+> row set after a share; that is fork work and lands here as patch 14 when its mechanism is traced.
+> Its app half — a participant "Leave classroom" over patch 11 — and the pin bump that carries patch
+> 13 live in that repo, not here.)
 >
 > **Settled 2026-08-16: the consumer base is `mango/patches-1.10` @ `e18249a`.** Decided by action —
 > MangoSync 0.7.2 pins it and every Mango app has been bumped in lockstep to that same revision and
