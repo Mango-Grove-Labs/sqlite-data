@@ -231,7 +231,17 @@
         $0.ownerName = ownerName ?? $0.ownerName
         $0.parentRecordPrimaryKey = parentRecordPrimaryKey
         $0.parentRecordType = parentRecordType
-        $0.userModificationTime = $currentTime()
+        // MANGO PATCH 14 (MonteSprout F4) — a write the SYNC ENGINE performed is not a user
+        // modification. This trigger fires for both, and the wall-clock stamp it wrote while
+        // applying a fetched record put the local time ahead of patch 7's mirror on every
+        // already-present row the server re-delivered — so the row counted as an unsent edit
+        // forever, and a share (which re-delivers the whole zone) made that the device's entire
+        // row set. The metadata's zone/parent columns above must still follow the server, so the
+        // guard is on this column alone rather than on the trigger.
+        $0.userModificationTime =
+          Case()
+          .when(SyncEngine.$isSynchronizing, then: $0.userModificationTime)
+          .else($currentTime())
       }
     }
   }

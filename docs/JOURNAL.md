@@ -267,3 +267,32 @@ zone instead of by root reddens both the child-deletion and the two-rooms test; 
 guard reddens the owner's-unshare test (an earlier draft of which deleted an *unshared* record and
 proved nothing). Full suite 341/341. ⚠ Patch 13 is **inert until MangoSync and its host implement
 the new method** — a pin bump alone restores no notice; that adoption is MonteSprout's own next slice.
+
+## 2026-08-23 — Phase 10.1: patch 14, a write the sync engine performed is not a user modification
+
+The second cut blocker from MonteSprout's first two-account device session (F4): "Unsent edits"
+jumped from 0 to 180 on the lead's iPhone the moment a room was shared, and 174 → 354 on the iPad
+after a relaunch — both ≈ the device's entire row set, while a Console three-way count proved the
+data intact. The finding guessed "the share/shared-zone paths don't stamp the mirror"; the traced
+mechanism was more general and had nothing to do with sharing. The user tables' `after_update`
+trigger is the **one** metadata trigger with no `isSynchronizing` guard — deliberately, since the
+zone/parent columns it maintains must follow the server — and it also stamped
+`userModificationTime = currentTime()`. So the sync engine's own apply write left the local stamp at
+the wall clock while patch 7's mirror took the server record's, permanently behind it. Sharing is
+merely what made it the *whole* device: it re-delivers every record in the zone.
+
+The fix is two halves, and the second exists because of what the first opens. Guarding the trigger's
+one column fixes the count — and then declares an **already-unsent** local edit settled the moment
+any server record for its row arrives, because `upsertFromServerRecord` forces the record's stamp up
+to the local one so the merged row can be re-uploaded, and the mirror was reading that forced-up
+value. So the pre-force stamp is captured and passed down through a new defaulted
+`carriedServerModificationTime:` on `setLastKnownServerRecord`; save-ack callers pass nothing and
+keep reading the record itself. A repair migration nulls the mirrors the old path stranded — without
+it patch 9's start rescan re-enqueues an upgraded device's whole downloaded dataset on **every**
+launch, which is 5.3a's loop rebuilt out of two individually-correct patches.
+
+Four new tests (three in `UnsentUpdateVisibilityTests`, one migration case), each guarded 5.3a-style
+by neutralizing its own half in place; the 5.3a fixture's non-sentinel row moved to a *level* mirror,
+since a behind-mirror there is now nulled further down the migrator. Full suite **346/346**.
+⚠ Residual, split out as 10.2: only a fetch can level a mirror, so a fetched-then-locally-edited row
+still reads unsent after its edit lands. Patch 14 shrinks patch 9's loop; it does not close it.

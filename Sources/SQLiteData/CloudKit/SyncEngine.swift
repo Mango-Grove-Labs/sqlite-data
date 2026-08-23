@@ -2284,6 +2284,13 @@
           return
         }
 
+        // MANGO PATCH 14 — capture the stamp the SERVER record actually carried, before the line
+        // below forces it up to the local time so the merged row can be re-uploaded. Patch 7's
+        // mirror is read as "the stamp on the server's copy"; taking it off the forced-up record
+        // would make an already-unsent local edit read as settled the moment any server record for
+        // the same row arrived. Non-nil by the guard at the top of this function.
+        let carriedServerModificationTime = serverRecord.userModificationTime
+
         serverRecord.userModificationTime = metadata.userModificationTime
 
         func open<T>(_ table: some SynchronizableTable<T>) throws {
@@ -2309,7 +2316,13 @@
             try UnsyncedRecordID.find(serverRecord.recordID).delete().execute(db)
             try SyncMetadata
               .find(serverRecord.recordID)
-              .update { $0.setLastKnownServerRecord(serverRecord) }
+              .update {
+                $0.setLastKnownServerRecord(
+                  serverRecord,
+                  // MANGO PATCH 14 — see `carriedServerModificationTime`.
+                  carriedServerModificationTime: carriedServerModificationTime
+                )
+              }
               .execute(db)
           } catch let error as AssetDataNotLoadable {
             // MANGO PATCH 4 — a failed asset download parks for retry, patch-1 idiom: the parked
@@ -2794,7 +2807,10 @@
 
   @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
   extension Updates<SyncMetadata> {
-    mutating func setLastKnownServerRecord(_ lastKnownServerRecord: CKRecord?) {
+    mutating func setLastKnownServerRecord(
+      _ lastKnownServerRecord: CKRecord?,
+      carriedServerModificationTime: Int64? = nil
+    ) {
       self.zoneName = lastKnownServerRecord?.recordID.zoneID.zoneName ?? self.zoneName
       self.ownerName = lastKnownServerRecord?.recordID.zoneID.ownerName ?? self.ownerName
       self.lastKnownServerRecord = #bind(lastKnownServerRecord)
@@ -2811,9 +2827,17 @@
       // the local-stamp max-bump) untouched: "unknown" stays NULL, never becomes an invented time. The
       // fetch path already enforces this at the top of `upsertFromServerRecord`; this is the save-ack
       // path's version of the same discipline.
+      //
+      // PATCH 14 (F4): the fetch path passes `carriedServerModificationTime` — the stamp the server
+      // record held before `upsertFromServerRecord` forced it up to the local time so the merged row
+      // could be re-uploaded. Mirroring the forced-up value would declare an already-unsent local edit
+      // settled the moment any server record for its row arrived. Save-ack callers pass nothing and
+      // keep reading the record itself, which is the server's copy verbatim there.
       if let lastKnownServerRecord {
         if lastKnownServerRecord.encryptedValues[CKRecord.userModificationTimeKey] != nil {
-          self.serverUserModificationTime = #bind(lastKnownServerRecord.userModificationTime)
+          self.serverUserModificationTime = #bind(
+            carriedServerModificationTime ?? lastKnownServerRecord.userModificationTime
+          )
           self.userModificationTime = #sql(
             """
             max(\(self.userModificationTime), \(lastKnownServerRecord.userModificationTime))

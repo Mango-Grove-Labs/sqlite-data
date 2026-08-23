@@ -34,7 +34,7 @@
                "lastKnownServerRecord","serverUserModificationTime","userModificationTime")
             VALUES
               ('1','remindersLists','zone','owner', X'00', -1, 60),
-              ('2','remindersLists','zone','owner', X'00', 42, 60),
+              ('2','remindersLists','zone','owner', X'00', 60, 60),
               ('3','remindersLists','zone','owner', NULL, NULL, 60)
             """
         )
@@ -55,8 +55,55 @@
       #expect(mirrors.count == 3)
       // The legacy sentinel becomes an honest unknown…
       #expect(mirrors[0] == ("1", nil))
-      // …while a real stamp and a never-confirmed NULL are untouched.
-      #expect(mirrors[1] == ("2", 42))
+      // …while a real stamp and a never-confirmed NULL are untouched. (Row 2 is a *settled* mirror,
+      // level with its local stamp — the state a confirmed row actually holds after a round trip.
+      // A behind-mirror would be nulled here too, by patch 14's repair further down the migrator,
+      // and would say nothing about this migration's `= -1` specificity.)
+      #expect(mirrors[1] == ("2", 60))
+      #expect(mirrors[2] == ("3", nil))
+    }
+
+    // PATCH 14 (F4) — the same repair, one bug later. Rows applied from the server under the
+    // pre-patch-14 trigger hold a mirror stranded *behind* a wall-clock local stamp; they read as
+    // unsent edits forever and re-enter patch 9's rescan on every launch. The upgrade nulls exactly
+    // those, and leaves a level mirror and a never-confirmed NULL alone.
+    @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
+    @Test func theUpgradeNullsMirrorsStrandedBehindTheLocalStamp() throws {
+      let metadatabase = try DatabaseQueue()
+      try migrate(
+        metadatabase: metadatabase,
+        upTo: "Mango: null the legacy -1 mirror sentinels"
+      )
+      try metadatabase.write { db in
+        try db.execute(
+          sql: """
+            INSERT INTO "sqlitedata_icloud_metadata"
+              ("recordPrimaryKey","recordType","zoneName","ownerName",
+               "lastKnownServerRecord","serverUserModificationTime","userModificationTime")
+            VALUES
+              ('1','remindersLists','zone','owner', X'00', 42, 1755900000),
+              ('2','remindersLists','zone','owner', X'00', 60, 60),
+              ('3','remindersLists','zone','owner', NULL, NULL, 60)
+            """
+        )
+      }
+
+      try migrate(metadatabase: metadatabase)
+
+      let mirrors = try metadatabase.read { db in
+        try Row.fetchAll(
+          db,
+          sql: """
+            SELECT "recordPrimaryKey", "serverUserModificationTime"
+              FROM "sqlitedata_icloud_metadata" ORDER BY "recordPrimaryKey"
+            """
+        ).map { ($0["recordPrimaryKey"] as String, $0["serverUserModificationTime"] as Int64?) }
+      }
+      #expect(mirrors.count == 3)
+      // The stranded mirror becomes an honest unknown…
+      #expect(mirrors[0] == ("1", nil))
+      // …while a level mirror and a never-confirmed NULL are untouched.
+      #expect(mirrors[1] == ("2", 60))
       #expect(mirrors[2] == ("3", nil))
     }
   }

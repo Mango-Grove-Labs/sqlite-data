@@ -201,3 +201,37 @@ of the participant story). Both red-first on their exact mechanisms; full suite 
    patch's silence guards passed pre-patch. Each was proven by mutating the *shipped* patch — and
    the first draft of the private-scope test survived deleting the guard it existed for, because it
    deleted an unshared record. Write the mutation down beside the test.
+
+## 2026-08-23 — Phase 10 (patch 14): the ledger must count what the engine will send
+
+1. **The mechanism is not sharing-specific, so neither is the fix.** MonteSprout's F4 recommended
+   "stamp the mirror on the shared-zone save/fetch paths". Tracing it found the user tables'
+   `after_update` trigger stamping `userModificationTime` for the sync engine's own apply write.
+   Every re-delivered row on every device was affected; a share re-delivers a whole zone, which is
+   only why the reading was a device's entire row set. Patching the two named paths would have left
+   the general bug in place and fixed nothing on an unshared device.
+2. **Guard the column, not the trigger.** That trigger is the one metadata trigger without an
+   `isSynchronizing` guard *on purpose* — its zone/parent maintenance must follow the server. Only
+   the stamp is wrong there, so only the stamp is guarded
+   (`CASE WHEN isSynchronizing THEN userModificationTime ELSE currentTime() END`).
+3. **The ledger's contract is "what the engine will send", not "what changed on disk".** A
+   sync-applied write enqueues no save — the metadata callback trigger is `!isSynchronizing` — so it
+   must not read as one waiting. Post-patch the two agree; that is the invariant to test against
+   next time, rather than any particular number.
+4. **Mirror the stamp the record CARRIED, not the one the apply path forced up.**
+   `upsertFromServerRecord` raises the record's stamp to the local one so the merged row can be
+   re-uploaded. Guarding the trigger alone made the mirror inherit that value, which declares an
+   already-unsent local edit settled the moment any server record for its row arrives — a false
+   negative in exactly the state the ledger exists to show. The pre-force value is passed down; the
+   new parameter is defaulted so save-ack callers are untouched (there the record *is* the server's
+   copy verbatim).
+5. **Junk becomes NULL, never an invented "in sync" stamp.** The upgrade repair follows 5.3a: at
+   migration time a behind-mirror cannot be told from a genuine unsent edit, and patch 7's rule
+   forbids inventing a level stamp. The rare true positive cleared is not that row's only guard —
+   5.3b's durable pending ledger carries a stranded save across the launch.
+6. **The slim-ack residual is split, not absorbed (10.2).** Only a fetch can ever level a mirror:
+   real CloudKit's save ack carries no encrypted fields. Closing it needs the stamp the *sent* record
+   carried kept across the batch → ack boundary — a new column, since a further local edit can land
+   in that window. Patch 14 shrinks patch 9's re-enqueue loop from *every fetched row* to
+   *fetched-and-locally-edited* rows; the residual is pinned as current behavior by
+   `aSlimAckCannotLevelTheMirrorOfAFetchedRow` rather than left to be re-diagnosed.

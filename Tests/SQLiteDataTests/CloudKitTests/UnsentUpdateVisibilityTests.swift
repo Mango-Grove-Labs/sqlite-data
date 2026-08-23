@@ -244,6 +244,177 @@
         #expect(try await mirroredServerStamp() == confirmed)
         #expect(try await unsentEdits() == 0)
       }
+
+      /// Patch 7 amendment (F4, the 2026-08-23 two-account session): applying a record that came DOWN
+      /// from the server must not leave the row reading as a locally-unsent edit. The sync engine's own
+      /// row write fires the user table's after-update trigger, which stamps the metadata's
+      /// `userModificationTime` with the wall clock — a value no user edit produced — while the mirror is
+      /// stamped from the server record. Local then sits strictly ahead of the mirror and the row counts
+      /// as unsent forever. Sharing a zone re-delivers every record in it, which is why the field reading
+      /// was the device's whole row set (iPhone 0 → 180 the moment a room was shared).
+      @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
+      @Test func aRecordAppliedFromTheServerIsNotAnUnsentEdit() async throws {
+        try await userDatabase.userWrite { db in
+          try db.seed { RemindersList(id: 1, title: "Personal") }
+        }
+        try await syncEngine.processPendingRecordZoneChanges(scope: .private)
+        #expect(try await unsentEdits() == 0)
+        let confirmed = try await mirroredServerStamp()
+
+        // The server re-delivers the record already on this device, unchanged — what a share does to
+        // every record in the zone. Time has moved on, as it always has by the next fetch round.
+        let serverRecord = try syncEngine.private.database.record(
+          for: RemindersList.recordID(for: 1)
+        )
+        await withDependencies {
+          $0.currentTime.now += 60
+        } operation: {
+          await syncEngine.handleFetchedRecordZoneChanges(
+            modifications: [serverRecord],
+            syncEngine: syncEngine.private
+          )
+        }
+
+        // Nothing was edited here, so nothing is waiting to upload.
+        #expect(try await unsentEdits() == 0)
+        // …and the mirror still describes the server copy it was stamped from.
+        #expect(try await mirroredServerStamp() == confirmed)
+        let times = try await modificationTimes()
+        #expect(times.server == times.local)
+      }
+
+      /// The other half of the same guard: an edit made **after** the fetch applied is still an unsent
+      /// edit. The fix above must not make the fetch path a blanket "declare this row clean" — the
+      /// discriminator has to keep discriminating.
+      @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
+      @Test func anEditAfterAServerApplyIsStillAnUnsentEdit() async throws {
+        try await userDatabase.userWrite { db in
+          try db.seed { RemindersList(id: 1, title: "Personal") }
+        }
+        try await syncEngine.processPendingRecordZoneChanges(scope: .private)
+
+        let serverRecord = try syncEngine.private.database.record(
+          for: RemindersList.recordID(for: 1)
+        )
+        await withDependencies {
+          $0.currentTime.now += 60
+        } operation: {
+          await syncEngine.handleFetchedRecordZoneChanges(
+            modifications: [serverRecord],
+            syncEngine: syncEngine.private
+          )
+        }
+        #expect(try await unsentEdits() == 0)
+
+        try await withDependencies {
+          $0.currentTime.now += 120
+        } operation: {
+          try await userDatabase.userWrite { db in
+            try RemindersList.find(1).update { $0.title = "Renamed" }.execute(db)
+          }
+        }
+        #expect(try await unsentEdits() == 1)
+
+        // Drain the pending save for the harness's teardown invariant.
+        syncEngine.private.state.assertPendingRecordZoneChanges([
+          .saveRecord(RemindersList.recordID(for: 1))
+        ])
+      }
+
+      /// Characterization, NOT a fixed behavior — the residual patch 14 deliberately leaves standing.
+      /// A row that arrived by FETCH carries a real mirror stamp; edit it and upload it, and the only
+      /// thing that could level the mirror again is the save ack — which real CloudKit delivers without
+      /// the encrypted fields, so patch 7's F2 rule (never invent a stamp) leaves it behind. The row
+      /// then reads as an unsent edit after its edit has landed. Fixing it needs the stamp the SENT
+      /// record carried, which nothing currently keeps across the batch → ack boundary; that is its own
+      /// slice. Pinned here so the next reading of "Unsent edits > 0" is not re-diagnosed from scratch.
+      @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
+      @Test func aSlimAckCannotLevelTheMirrorOfAFetchedRow() async throws {
+        // The row arrives from the server, so the mirror holds a real stamp (not the NULL an
+        // upload-only row keeps under the F2 rule).
+        let serverRecord = CKRecord(
+          recordType: RemindersList.tableName,
+          recordID: RemindersList.recordID(for: 1)
+        )
+        serverRecord.setValue("1", forKey: "id", at: now)
+        serverRecord.setValue("Personal", forKey: "title", at: now)
+        _ = try syncEngine.modifyRecords(scope: .private, saving: [serverRecord])
+        await syncEngine.handleFetchedRecordZoneChanges(
+          modifications: [serverRecord],
+          syncEngine: syncEngine.private
+        )
+        #expect(try await mirroredServerStamp() != nil)
+        #expect(try await unsentEdits() == 0)
+
+        try await withDependencies {
+          $0.currentTime.now += 60
+        } operation: {
+          try await userDatabase.userWrite { db in
+            try RemindersList.find(1).update { $0.title = "Renamed" }.execute(db)
+          }
+        }
+        #expect(try await unsentEdits() == 1)  // correct: the edit is genuinely unsent
+
+        // The save lands, and CloudKit's ack carries system fields only.
+        let slimAck = CKRecord(
+          recordType: RemindersList.tableName,
+          recordID: RemindersList.recordID(for: 1)
+        )
+        await syncEngine.handleSentRecordZoneChanges(
+          savedRecords: [slimAck],
+          syncEngine: syncEngine.private
+        )
+        // The edit HAS landed, and the count still says 1. This is the residual.
+        #expect(try await unsentEdits() == 1)
+
+        syncEngine.private.state.assertPendingRecordZoneChanges([
+          .saveRecord(RemindersList.recordID(for: 1))
+        ])
+      }
+
+      /// The hardest direction, and the one a "declare the row clean on apply" fix would get wrong: an
+      /// edit that is ALREADY unsent when an older server record for the same row arrives. The merge
+      /// keeps the local value, the save is still pending, and the count must still say 1. (The mirror
+      /// must therefore record the stamp the SERVER record carried, not the one the apply path forces up
+      /// to the local time so the merged row can be re-uploaded.)
+      @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
+      @Test func anAlreadyUnsentEditSurvivesAServerApply() async throws {
+        try await userDatabase.userWrite { db in
+          try db.seed { RemindersList(id: 1, title: "Personal") }
+        }
+        try await syncEngine.processPendingRecordZoneChanges(scope: .private)
+        let serverRecord = try syncEngine.private.database.record(
+          for: RemindersList.recordID(for: 1)
+        )
+
+        try await withDependencies {
+          $0.currentTime.now += 60
+        } operation: {
+          try await userDatabase.userWrite { db in
+            try RemindersList.find(1).update { $0.title = "Renamed" }.execute(db)
+          }
+        }
+        #expect(try await unsentEdits() == 1)
+
+        // The server re-delivers its (older) copy. The local edit wins the merge and is still unsent.
+        await withDependencies {
+          $0.currentTime.now += 120
+        } operation: {
+          await syncEngine.handleFetchedRecordZoneChanges(
+            modifications: [serverRecord],
+            syncEngine: syncEngine.private
+          )
+        }
+        try await userDatabase.read { db in
+          try #expect(RemindersList.find(1).select(\.title).fetchOne(db) == "Renamed")
+        }
+        #expect(try await unsentEdits() == 1)
+
+        // Drain the pending save for the harness's teardown invariant.
+        syncEngine.private.state.assertPendingRecordZoneChanges([
+          .saveRecord(RemindersList.recordID(for: 1))
+        ])
+      }
     }
   }
 #endif

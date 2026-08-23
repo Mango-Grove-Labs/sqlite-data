@@ -194,6 +194,27 @@
       )
       .execute(db)
     }
+    // MonteSprout fork (PATCH 14, the F4 repair): null the mirrors the pre-patch-14 apply path left
+    // stranded behind the local stamp. Applying a fetched record bumped `userModificationTime` to the
+    // wall clock (the user-table trigger could not tell the sync engine's own write from a user's)
+    // while the mirror kept the server's stamp — so every row the server re-delivered read as an unsent
+    // edit permanently, and patch 9's start rescan re-enqueued the device's whole downloaded dataset on
+    // EVERY launch. Exactly the 5.3a failure shape above, repaired the same way: at upgrade time a
+    // behind-mirror cannot be told apart from a genuine unsent edit, so junk becomes honest unknown
+    // rather than an invented "in sync" stamp (patch 7's rule). The rare true positive this also clears
+    // is not that row's only guard — 5.3b's durable pending ledger carries a stranded save across the
+    // launch, and the mirror re-fills on the row's next apply. A NEW migration, never an edit to a
+    // released one — the DEBUG assertion below enforces exactly that.
+    migrator.registerMigration("Mango: null mirrors stranded by the pre-patch-14 apply path") { db in
+      try #sql(
+        """
+        UPDATE "\(raw: .sqliteDataCloudKitSchemaName)_metadata"
+           SET "serverUserModificationTime" = NULL
+         WHERE "serverUserModificationTime" < "userModificationTime"
+        """
+      )
+      .execute(db)
+    }
 
     #if DEBUG
       try metadatabase.read { db in

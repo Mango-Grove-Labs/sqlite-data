@@ -1040,7 +1040,7 @@
                 FROM "sqlitedata_icloud_metadata"
                 WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."parentID")) AND (("sqlitedata_icloud_metadata"."recordType") = ('parents'))))), "sqlitedata_icloud_metadata"."zoneName"), "ownerName" = coalesce(coalesce(NULL, "sqlitedata_icloud_currentOwnerName"(), (SELECT "sqlitedata_icloud_metadata"."ownerName"
                 FROM "sqlitedata_icloud_metadata"
-                WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."parentID")) AND (("sqlitedata_icloud_metadata"."recordType") = ('parents'))))), "sqlitedata_icloud_metadata"."ownerName"), "parentRecordPrimaryKey" = "new"."parentID", "parentRecordType" = 'parents', "userModificationTime" = "sqlitedata_icloud_currentTime"()
+                WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."parentID")) AND (("sqlitedata_icloud_metadata"."recordType") = ('parents'))))), "sqlitedata_icloud_metadata"."ownerName"), "parentRecordPrimaryKey" = "new"."parentID", "parentRecordType" = 'parents', "userModificationTime" = CASE WHEN "sqlitedata_icloud_syncEngineIsSynchronizingChanges"() THEN "sqlitedata_icloud_metadata"."userModificationTime" ELSE "sqlitedata_icloud_currentTime"() END
                 WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."id")) AND (("sqlitedata_icloud_metadata"."recordType") = ('childWithOnDeleteSetDefaults')));
               END
               """,
@@ -1073,7 +1073,7 @@
                 FROM "sqlitedata_icloud_metadata"
                 WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."parentID")) AND (("sqlitedata_icloud_metadata"."recordType") = ('parents'))))), "sqlitedata_icloud_metadata"."zoneName"), "ownerName" = coalesce(coalesce(NULL, "sqlitedata_icloud_currentOwnerName"(), (SELECT "sqlitedata_icloud_metadata"."ownerName"
                 FROM "sqlitedata_icloud_metadata"
-                WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."parentID")) AND (("sqlitedata_icloud_metadata"."recordType") = ('parents'))))), "sqlitedata_icloud_metadata"."ownerName"), "parentRecordPrimaryKey" = "new"."parentID", "parentRecordType" = 'parents', "userModificationTime" = "sqlitedata_icloud_currentTime"()
+                WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."parentID")) AND (("sqlitedata_icloud_metadata"."recordType") = ('parents'))))), "sqlitedata_icloud_metadata"."ownerName"), "parentRecordPrimaryKey" = "new"."parentID", "parentRecordType" = 'parents', "userModificationTime" = CASE WHEN "sqlitedata_icloud_syncEngineIsSynchronizingChanges"() THEN "sqlitedata_icloud_metadata"."userModificationTime" ELSE "sqlitedata_icloud_currentTime"() END
                 WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."id")) AND (("sqlitedata_icloud_metadata"."recordType") = ('childWithOnDeleteSetNulls')));
               END
               """,
@@ -1098,7 +1098,7 @@
                 SELECT "new"."id", 'modelAs', coalesce("sqlitedata_icloud_currentZoneName"(), 'zone'), coalesce("sqlitedata_icloud_currentOwnerName"(), '__defaultOwner__'), NULL, NULL
                 ON CONFLICT DO NOTHING;
                 UPDATE "sqlitedata_icloud_metadata"
-                SET "zoneName" = coalesce("sqlitedata_icloud_currentZoneName"(), "sqlitedata_icloud_metadata"."zoneName"), "ownerName" = coalesce("sqlitedata_icloud_currentOwnerName"(), "sqlitedata_icloud_metadata"."ownerName"), "parentRecordPrimaryKey" = NULL, "parentRecordType" = NULL, "userModificationTime" = "sqlitedata_icloud_currentTime"()
+                SET "zoneName" = coalesce("sqlitedata_icloud_currentZoneName"(), "sqlitedata_icloud_metadata"."zoneName"), "ownerName" = coalesce("sqlitedata_icloud_currentOwnerName"(), "sqlitedata_icloud_metadata"."ownerName"), "parentRecordPrimaryKey" = NULL, "parentRecordType" = NULL, "userModificationTime" = CASE WHEN "sqlitedata_icloud_syncEngineIsSynchronizingChanges"() THEN "sqlitedata_icloud_metadata"."userModificationTime" ELSE "sqlitedata_icloud_currentTime"() END
                 WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."id")) AND (("sqlitedata_icloud_metadata"."recordType") = ('modelAs')));
               END
               """,
@@ -1131,7 +1131,7 @@
                 FROM "sqlitedata_icloud_metadata"
                 WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."modelAID")) AND (("sqlitedata_icloud_metadata"."recordType") = ('modelAs'))))), "sqlitedata_icloud_metadata"."zoneName"), "ownerName" = coalesce(coalesce(NULL, "sqlitedata_icloud_currentOwnerName"(), (SELECT "sqlitedata_icloud_metadata"."ownerName"
                 FROM "sqlitedata_icloud_metadata"
-                WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."modelAID")) AND (("sqlitedata_icloud_metadata"."recordType") = ('modelAs'))))), "sqlitedata_icloud_metadata"."ownerName"), "parentRecordPrimaryKey" = "new"."modelAID", "parentRecordType" = 'modelAs', "userModificationTime" = "sqlitedata_icloud_currentTime"()
+                WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."modelAID")) AND (("sqlitedata_icloud_metadata"."recordType") = ('modelAs'))))), "sqlitedata_icloud_metadata"."ownerName"), "parentRecordPrimaryKey" = "new"."modelAID", "parentRecordType" = 'modelAs', "userModificationTime" = CASE WHEN "sqlitedata_icloud_syncEngineIsSynchronizingChanges"() THEN "sqlitedata_icloud_metadata"."userModificationTime" ELSE "sqlitedata_icloud_currentTime"() END
                 WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."id")) AND (("sqlitedata_icloud_metadata"."recordType") = ('modelBs')));
               END
               """,
@@ -1164,7 +1164,7 @@
                 FROM "sqlitedata_icloud_metadata"
                 WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."modelBID")) AND (("sqlitedata_icloud_metadata"."recordType") = ('modelBs'))))), "sqlitedata_icloud_metadata"."zoneName"), "ownerName" = coalesce(coalesce(NULL, "sqlitedata_icloud_currentOwnerName"(), (SELECT "sqlitedata_icloud_metadata"."ownerName"
                 FROM "sqlitedata_icloud_metadata"
-                WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."modelBID")) AND (("sqlitedata_icloud_metadata"."recordType") = ('modelBs'))))), "sqlitedata_icloud_metadata"."ownerName"), "parentRecordPrimaryKey" = "new"."modelBID", "parentRecordType" = 'modelBs', "userModificationTime" = "sqlitedata_icloud_currentTime"()
+                WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."modelBID")) AND (("sqlitedata_icloud_metadata"."recordType") = ('modelBs'))))), "sqlitedata_icloud_metadata"."ownerName"), "parentRecordPrimaryKey" = "new"."modelBID", "parentRecordType" = 'modelBs', "userModificationTime" = CASE WHEN "sqlitedata_icloud_syncEngineIsSynchronizingChanges"() THEN "sqlitedata_icloud_metadata"."userModificationTime" ELSE "sqlitedata_icloud_currentTime"() END
                 WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."id")) AND (("sqlitedata_icloud_metadata"."recordType") = ('modelCs')));
               END
               """,
@@ -1189,7 +1189,7 @@
                 SELECT "new"."id", 'parents', coalesce("sqlitedata_icloud_currentZoneName"(), 'zone'), coalesce("sqlitedata_icloud_currentOwnerName"(), '__defaultOwner__'), NULL, NULL
                 ON CONFLICT DO NOTHING;
                 UPDATE "sqlitedata_icloud_metadata"
-                SET "zoneName" = coalesce("sqlitedata_icloud_currentZoneName"(), "sqlitedata_icloud_metadata"."zoneName"), "ownerName" = coalesce("sqlitedata_icloud_currentOwnerName"(), "sqlitedata_icloud_metadata"."ownerName"), "parentRecordPrimaryKey" = NULL, "parentRecordType" = NULL, "userModificationTime" = "sqlitedata_icloud_currentTime"()
+                SET "zoneName" = coalesce("sqlitedata_icloud_currentZoneName"(), "sqlitedata_icloud_metadata"."zoneName"), "ownerName" = coalesce("sqlitedata_icloud_currentOwnerName"(), "sqlitedata_icloud_metadata"."ownerName"), "parentRecordPrimaryKey" = NULL, "parentRecordType" = NULL, "userModificationTime" = CASE WHEN "sqlitedata_icloud_syncEngineIsSynchronizingChanges"() THEN "sqlitedata_icloud_metadata"."userModificationTime" ELSE "sqlitedata_icloud_currentTime"() END
                 WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."id")) AND (("sqlitedata_icloud_metadata"."recordType") = ('parents')));
               END
               """,
@@ -1214,7 +1214,7 @@
                 SELECT "new"."id", 'reminderTags', coalesce("sqlitedata_icloud_currentZoneName"(), 'zone'), coalesce("sqlitedata_icloud_currentOwnerName"(), '__defaultOwner__'), NULL, NULL
                 ON CONFLICT DO NOTHING;
                 UPDATE "sqlitedata_icloud_metadata"
-                SET "zoneName" = coalesce("sqlitedata_icloud_currentZoneName"(), "sqlitedata_icloud_metadata"."zoneName"), "ownerName" = coalesce("sqlitedata_icloud_currentOwnerName"(), "sqlitedata_icloud_metadata"."ownerName"), "parentRecordPrimaryKey" = NULL, "parentRecordType" = NULL, "userModificationTime" = "sqlitedata_icloud_currentTime"()
+                SET "zoneName" = coalesce("sqlitedata_icloud_currentZoneName"(), "sqlitedata_icloud_metadata"."zoneName"), "ownerName" = coalesce("sqlitedata_icloud_currentOwnerName"(), "sqlitedata_icloud_metadata"."ownerName"), "parentRecordPrimaryKey" = NULL, "parentRecordType" = NULL, "userModificationTime" = CASE WHEN "sqlitedata_icloud_syncEngineIsSynchronizingChanges"() THEN "sqlitedata_icloud_metadata"."userModificationTime" ELSE "sqlitedata_icloud_currentTime"() END
                 WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."id")) AND (("sqlitedata_icloud_metadata"."recordType") = ('reminderTags')));
               END
               """,
@@ -1247,7 +1247,7 @@
                 FROM "sqlitedata_icloud_metadata"
                 WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."remindersListID")) AND (("sqlitedata_icloud_metadata"."recordType") = ('remindersLists'))))), "sqlitedata_icloud_metadata"."zoneName"), "ownerName" = coalesce(coalesce(NULL, "sqlitedata_icloud_currentOwnerName"(), (SELECT "sqlitedata_icloud_metadata"."ownerName"
                 FROM "sqlitedata_icloud_metadata"
-                WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."remindersListID")) AND (("sqlitedata_icloud_metadata"."recordType") = ('remindersLists'))))), "sqlitedata_icloud_metadata"."ownerName"), "parentRecordPrimaryKey" = "new"."remindersListID", "parentRecordType" = 'remindersLists', "userModificationTime" = "sqlitedata_icloud_currentTime"()
+                WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."remindersListID")) AND (("sqlitedata_icloud_metadata"."recordType") = ('remindersLists'))))), "sqlitedata_icloud_metadata"."ownerName"), "parentRecordPrimaryKey" = "new"."remindersListID", "parentRecordType" = 'remindersLists', "userModificationTime" = CASE WHEN "sqlitedata_icloud_syncEngineIsSynchronizingChanges"() THEN "sqlitedata_icloud_metadata"."userModificationTime" ELSE "sqlitedata_icloud_currentTime"() END
                 WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."id")) AND (("sqlitedata_icloud_metadata"."recordType") = ('reminders')));
               END
               """,
@@ -1280,7 +1280,7 @@
                 FROM "sqlitedata_icloud_metadata"
                 WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."remindersListID")) AND (("sqlitedata_icloud_metadata"."recordType") = ('remindersLists'))))), "sqlitedata_icloud_metadata"."zoneName"), "ownerName" = coalesce(coalesce(NULL, "sqlitedata_icloud_currentOwnerName"(), (SELECT "sqlitedata_icloud_metadata"."ownerName"
                 FROM "sqlitedata_icloud_metadata"
-                WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."remindersListID")) AND (("sqlitedata_icloud_metadata"."recordType") = ('remindersLists'))))), "sqlitedata_icloud_metadata"."ownerName"), "parentRecordPrimaryKey" = "new"."remindersListID", "parentRecordType" = 'remindersLists', "userModificationTime" = "sqlitedata_icloud_currentTime"()
+                WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."remindersListID")) AND (("sqlitedata_icloud_metadata"."recordType") = ('remindersLists'))))), "sqlitedata_icloud_metadata"."ownerName"), "parentRecordPrimaryKey" = "new"."remindersListID", "parentRecordType" = 'remindersLists', "userModificationTime" = CASE WHEN "sqlitedata_icloud_syncEngineIsSynchronizingChanges"() THEN "sqlitedata_icloud_metadata"."userModificationTime" ELSE "sqlitedata_icloud_currentTime"() END
                 WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."remindersListID")) AND (("sqlitedata_icloud_metadata"."recordType") = ('remindersListAssets')));
               END
               """,
@@ -1313,7 +1313,7 @@
                 FROM "sqlitedata_icloud_metadata"
                 WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."remindersListID")) AND (("sqlitedata_icloud_metadata"."recordType") = ('remindersLists'))))), "sqlitedata_icloud_metadata"."zoneName"), "ownerName" = coalesce(coalesce('__defaultOwner__', "sqlitedata_icloud_currentOwnerName"(), (SELECT "sqlitedata_icloud_metadata"."ownerName"
                 FROM "sqlitedata_icloud_metadata"
-                WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."remindersListID")) AND (("sqlitedata_icloud_metadata"."recordType") = ('remindersLists'))))), "sqlitedata_icloud_metadata"."ownerName"), "parentRecordPrimaryKey" = "new"."remindersListID", "parentRecordType" = 'remindersLists', "userModificationTime" = "sqlitedata_icloud_currentTime"()
+                WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."remindersListID")) AND (("sqlitedata_icloud_metadata"."recordType") = ('remindersLists'))))), "sqlitedata_icloud_metadata"."ownerName"), "parentRecordPrimaryKey" = "new"."remindersListID", "parentRecordType" = 'remindersLists', "userModificationTime" = CASE WHEN "sqlitedata_icloud_syncEngineIsSynchronizingChanges"() THEN "sqlitedata_icloud_metadata"."userModificationTime" ELSE "sqlitedata_icloud_currentTime"() END
                 WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."remindersListID")) AND (("sqlitedata_icloud_metadata"."recordType") = ('remindersListPrivates')));
               END
               """,
@@ -1338,7 +1338,7 @@
                 SELECT "new"."id", 'remindersLists', coalesce("sqlitedata_icloud_currentZoneName"(), 'zone'), coalesce("sqlitedata_icloud_currentOwnerName"(), '__defaultOwner__'), NULL, NULL
                 ON CONFLICT DO NOTHING;
                 UPDATE "sqlitedata_icloud_metadata"
-                SET "zoneName" = coalesce("sqlitedata_icloud_currentZoneName"(), "sqlitedata_icloud_metadata"."zoneName"), "ownerName" = coalesce("sqlitedata_icloud_currentOwnerName"(), "sqlitedata_icloud_metadata"."ownerName"), "parentRecordPrimaryKey" = NULL, "parentRecordType" = NULL, "userModificationTime" = "sqlitedata_icloud_currentTime"()
+                SET "zoneName" = coalesce("sqlitedata_icloud_currentZoneName"(), "sqlitedata_icloud_metadata"."zoneName"), "ownerName" = coalesce("sqlitedata_icloud_currentOwnerName"(), "sqlitedata_icloud_metadata"."ownerName"), "parentRecordPrimaryKey" = NULL, "parentRecordType" = NULL, "userModificationTime" = CASE WHEN "sqlitedata_icloud_syncEngineIsSynchronizingChanges"() THEN "sqlitedata_icloud_metadata"."userModificationTime" ELSE "sqlitedata_icloud_currentTime"() END
                 WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."id")) AND (("sqlitedata_icloud_metadata"."recordType") = ('remindersLists')));
               END
               """,
@@ -1363,7 +1363,7 @@
                 SELECT "new"."id", 'scopedModels', coalesce("sqlitedata_icloud_currentZoneName"(), 'zone'), coalesce("sqlitedata_icloud_currentOwnerName"(), '__defaultOwner__'), NULL, NULL
                 ON CONFLICT DO NOTHING;
                 UPDATE "sqlitedata_icloud_metadata"
-                SET "zoneName" = coalesce("sqlitedata_icloud_currentZoneName"(), "sqlitedata_icloud_metadata"."zoneName"), "ownerName" = coalesce("sqlitedata_icloud_currentOwnerName"(), "sqlitedata_icloud_metadata"."ownerName"), "parentRecordPrimaryKey" = NULL, "parentRecordType" = NULL, "userModificationTime" = "sqlitedata_icloud_currentTime"()
+                SET "zoneName" = coalesce("sqlitedata_icloud_currentZoneName"(), "sqlitedata_icloud_metadata"."zoneName"), "ownerName" = coalesce("sqlitedata_icloud_currentOwnerName"(), "sqlitedata_icloud_metadata"."ownerName"), "parentRecordPrimaryKey" = NULL, "parentRecordType" = NULL, "userModificationTime" = CASE WHEN "sqlitedata_icloud_syncEngineIsSynchronizingChanges"() THEN "sqlitedata_icloud_metadata"."userModificationTime" ELSE "sqlitedata_icloud_currentTime"() END
                 WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."id")) AND (("sqlitedata_icloud_metadata"."recordType") = ('scopedModels')));
               END
               """,
@@ -1410,7 +1410,7 @@
                 SELECT "new"."title", 'tags', coalesce("sqlitedata_icloud_currentZoneName"(), 'zone'), coalesce("sqlitedata_icloud_currentOwnerName"(), '__defaultOwner__'), NULL, NULL
                 ON CONFLICT DO NOTHING;
                 UPDATE "sqlitedata_icloud_metadata"
-                SET "zoneName" = coalesce("sqlitedata_icloud_currentZoneName"(), "sqlitedata_icloud_metadata"."zoneName"), "ownerName" = coalesce("sqlitedata_icloud_currentOwnerName"(), "sqlitedata_icloud_metadata"."ownerName"), "parentRecordPrimaryKey" = NULL, "parentRecordType" = NULL, "userModificationTime" = "sqlitedata_icloud_currentTime"()
+                SET "zoneName" = coalesce("sqlitedata_icloud_currentZoneName"(), "sqlitedata_icloud_metadata"."zoneName"), "ownerName" = coalesce("sqlitedata_icloud_currentOwnerName"(), "sqlitedata_icloud_metadata"."ownerName"), "parentRecordPrimaryKey" = NULL, "parentRecordType" = NULL, "userModificationTime" = CASE WHEN "sqlitedata_icloud_syncEngineIsSynchronizingChanges"() THEN "sqlitedata_icloud_metadata"."userModificationTime" ELSE "sqlitedata_icloud_currentTime"() END
                 WHERE ((("sqlitedata_icloud_metadata"."recordPrimaryKey") = ("new"."title")) AND (("sqlitedata_icloud_metadata"."recordType") = ('tags')));
               END
               """,

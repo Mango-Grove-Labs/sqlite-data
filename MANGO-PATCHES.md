@@ -4,7 +4,8 @@ This fork (`Mango-Grove-Labs/sqlite-data`) is the **org-wide vehicle for library
 to [pointfreeco/sqlite-data](https://github.com/pointfreeco/sqlite-data). It is fully
 API-compatible with upstream — patches change behavior or the dependency manifest and never
 alter an upstream-declared symbol. **One sanctioned exception class: additive,
-default-implemented API** (so far the two `SyncEngineDelegate` hooks of patches 12 and 13) — code
+default-implemented API** (so far the two `SyncEngineDelegate` hooks of patches 12 and 13; patch 14's
+defaulted `carriedServerModificationTime:` parameter is internal, not consumer-visible) — code
 written against upstream compiles unchanged, and the new surface is consumed by **MangoSync**, the
 org's wrapper package, never imported directly by an app. Library bugs get fixed **here**, never
 re-implemented or shadowed in an app or wrapper package.
@@ -620,6 +621,75 @@ so bumping the pin alone does not restore a revocation notice. (b) A participant
 voluntarily produces this same event shape, so a host that shows "you were removed from X" will show
 it after her own tap unless it suppresses the notice for a leave it initiated.
 
+### 14. A write the SYNC ENGINE performed is not a user modification
+
+*MonteSprout Phase 55.2b-2 — the second cut blocker from the first two-account device session;
+evidence: the consumer's `docs/research/2026-08-23-two-account-session-findings.md` finding **F4**
+(iPhone 0 → 180 unsent edits the moment a room was shared; iPad 174 → 354 on the next relaunch —
+both ≈ the device's entire row set, while a Console three-way count proved the data intact).*
+
+The user tables' `after_update` trigger maintains the metadata row, and it is the one metadata
+trigger with **no `isSynchronizing` guard** — deliberately, because the zone/parent columns it keeps
+must follow the server. But it also stamped `userModificationTime = currentTime()`, and that fires
+for the sync engine's own apply write just as it does for a user's edit. So applying a fetched record
+left the local stamp at the **wall clock** while patch 7's mirror was stamped from the **server
+record**, permanently behind it. Every already-present row the server re-delivered then satisfied
+`serverUserModificationTime < userModificationTime` forever. Sharing is what made that the whole
+device: it re-delivers every record in the zone.
+
+Two halves, each independently guarded:
+
+- **The trigger stamps only a user's write.** `userModificationTime` becomes
+  `CASE WHEN isSynchronizing THEN userModificationTime ELSE currentTime() END` — the guard is on that
+  one column rather than on the trigger, so the zone/parent maintenance above it is untouched. This
+  also makes the ledger agree with the engine: a sync-applied write enqueues no save (the metadata
+  callback trigger is `!isSynchronizing`), so it must not read as one waiting.
+- **The mirror records the stamp the server record CARRIED.** `upsertFromServerRecord` forces the
+  record's stamp up to the local one (`serverRecord.userModificationTime =
+  metadata.userModificationTime`) so the merged row can be re-uploaded; mirroring *that* would
+  declare an **already-unsent
+  local edit settled** the moment any server record for its row arrived — the first fix alone opens
+  exactly that hole. The pre-force value is captured and passed to `setLastKnownServerRecord`, whose
+  new `carriedServerModificationTime:` parameter defaults to nil so every save-ack caller keeps
+  reading the record itself (there it *is* the server's copy verbatim).
+
+**A repair migration, for the same reason 5.3a needed one.** Rows applied under the old trigger hold
+a mirror stranded behind a wall-clock stamp, and patch 9's start rescan selects exactly that
+predicate — so an upgraded device would re-enqueue its whole downloaded dataset on **every launch**,
+the 5.3a loop rebuilt out of two individually-correct patches. `Mango: null mirrors stranded by the
+pre-patch-14 apply path` nulls them: at upgrade time a behind-mirror cannot be told from a genuine
+unsent edit, so junk becomes honest **unknown** rather than an invented "in sync" stamp (patch 7's
+rule). The true positives it also clears are not unguarded — 5.3b's durable pending ledger carries a
+stranded save across the launch, and the mirror re-fills on that row's next apply. A NEW migration,
+never an edit to a released one.
+
+- **`UnsentUpdateVisibilityTests`** gains three: a re-delivered record leaves the count at 0 with the
+  mirror still describing the server's copy; an edit made **after** an apply still counts 1 (the
+  discriminator keeps discriminating); and an **already-unsent** edit survives an older server record
+  arriving for the same row (the merge keeps the local value and the count stays 1).
+  **`LegacySentinelMigrationTests`** gains the upgrade case (stranded → NULL; a *level* mirror and a
+  never-confirmed NULL untouched).
+- **Guards, verified 2026-08-23 in the 5.3a style — neutralize the mechanism in place, never revert
+  the commit.** Restoring the bare `$currentTime()` in the trigger reddens the first two and only
+  those (plus `TriggerTests`' generated-SQL snapshot, expected); dropping the
+  `carriedServerModificationTime ??` reddens the already-unsent test and only that; `WHERE 0` in the
+  migration reddens the migration test while 5.3a's stays green. ⚠️ The 5.3a fixture's non-sentinel
+  row was moved to a **level** mirror (60/60): a behind-mirror there is nulled by this migration
+  further down the migrator and said nothing about 5.3a's `= -1` specificity either way.
+- ⚠️ **Rebase note.** Same class as patch 7 — re-record `TriggerTests`' inline snapshot after a
+  rebase (13 `userModificationTime = …` lines), and keep this migration registered last.
+
+**Residual, deliberately left standing (its own slice).** A row that arrived by **fetch** carries a
+real mirror stamp; edit it, upload it, and nothing can level the mirror again — real CloudKit's save
+ack carries no encrypted fields, and patch 7's F2 rule (never invent a stamp) correctly refuses it.
+That row reads as an unsent edit after its edit has landed, and patch 9 re-enqueues it once per
+launch. Closing it needs the stamp the **sent** record carried, which nothing currently keeps across
+the batch → ack boundary (a further local edit can land in that window — see
+`editBetweenBatchAndSentRecordZoneChanges`), i.e. a new column written at batch build and moved on a
+successful ack. Patch 14 shrinks the loop from *every fetched row* to *fetched-and-locally-edited*
+rows; it does not close it. Pinned by `aSlimAckCannotLevelTheMirrorOfAFetchedRow`, which asserts the
+**current** behavior — when the follow-up lands, that test is the one to invert.
+
 ### Characterization — what a "waiting to upload" count derived from `lastKnownServerRecord` cannot see
 
 *MonteSprout Phase 41.2a — no library change; a pinned fact consumers build on.*
@@ -771,7 +841,12 @@ declares it unbounded (`from: "0.36.0"`), so patch 3 is still ours to carry. Not
    **patch 13 (the record-deletion revocation notice — the second `SyncEngineDelegate` method +
    default impl in `SyncEngineDelegate.swift`, `notifyRevokedShareTeardown` plus its one call at the
    top of `handleFetchedRecordZoneChanges`; same conflict trap as patch 12, and without it patch 12
-   is an API that fires for nothing a participant ever sees)**,
+   is an API that fires for nothing a participant ever sees)**, **patch 14 (the `isSynchronizing`
+   guard on `SyncMetadata.update`'s `userModificationTime` in `Internal/Triggers.swift`, the
+   `carriedServerModificationTime` capture + parameter across `upsertFromServerRecord` and
+   `setLastKnownServerRecord`, and its repair migration — metadatabase data-only, keep it registered
+   LAST and its name byte-stable; also re-record `TriggerTests`' generated-SQL snapshot, which the
+   trigger half changes on 13 lines)**,
    the test
    commits (take them from the tip of the previous `mango/patches-*` branch). Resolve conflicts by **idiom, not line
    number** — the `SyncEngine` error-handling region drifts. Patch 3 conflicts every time, because the
