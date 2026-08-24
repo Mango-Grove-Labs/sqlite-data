@@ -235,3 +235,38 @@ of the participant story). Both red-first on their exact mechanisms; full suite 
    in that window. Patch 14 shrinks patch 9's re-enqueue loop from *every fetched row* to
    *fetched-and-locally-edited* rows; the residual is pinned as current behavior by
    `aSlimAckCannotLevelTheMirrorOfAFetchedRow` rather than left to be re-diagnosed.
+
+## 2026-08-23 — Phase 10.2 (patch 15): the sent stamp is a fact, not an invention
+
+1. **The stamp comes off the RECORD in the batch, not off the metadata row.**
+   `CKRecord.userModificationTime`'s setter takes a `max`, so an outgoing record built on an
+   all-fields archive can carry a stamp higher than `metadata.userModificationTime`. What is on the
+   wire is what the server will hold, so that is what gets written down. A record with no stamp at
+   all records nothing — absent stays unknown, never `-1` (patch 7's rule, third application).
+2. **Read the batch, not the provider closure.** The stamps are collected from
+   `batch.recordsToSave` after `recordZoneChangeBatch` returns, so only records that actually made
+   the batch are recorded, and the whole batch costs one write instead of one per record.
+3. **The ack MOVES the stamp with a `max`, never a plain assignment.** A fetch landing in the same
+   window can already have put a newer server copy's stamp in the mirror; a plain assignment would
+   move the mirror backwards and re-open a row patch 9 would then re-enqueue.
+   `coalesce(max(mirror, sent), sent, mirror)` is monotone and NULL-correct in all four combinations.
+4. **The move runs after `refreshLastKnownServerRecord`, deliberately.** When an ack *does* carry its
+   encrypted fields (the mocked container, and whatever CloudKit chooses to echo) the record's own
+   stamp is the better source; it lands first and the `max` leaves it alone. Ordering, not a branch.
+5. **A refused save discards its stamp.** The next batch build overwrites it anyway, so the clear is
+   hygiene rather than a correctness fix — but it is what makes the column's meaning ("a record
+   carrying this is in flight") literally true, which is the property the `max` rule is safe under.
+6. **This is not the F2 invention.** F2 forbade writing a stamp the *ack* did not carry — the `?? -1`
+   getter fallback. Patch 15 writes a stamp this device demonstrably put on the wire and the server
+   demonstrably accepted. The distinction is knowledge, not optimism.
+7. **The harness cannot reproduce the field's ordering, and the test says so.** A mocked record has
+   no `modificationDate` — nothing can give it one — so `refreshLastKnownServerRecord`'s
+   newer-than-mine guard always answers yes and the mock's batch build levels a confirmed row's
+   mirror optimistically, which real CloudKit's does not. The inversion test reaches the same
+   behind-mirror state through a fetch that lands while the save is in flight. Rejected the
+   alternatives: setting `modificationDate` (impossible — read-only system field) and asserting on
+   fabricated metadata (proves the SQL, not the path).
+8. **Side effect accepted and documented: the NULL-mirror slim-ack shape mostly disappears in the
+   field.** Rows that went through the batch builder now leave their ack with a real mirror, so
+   patch 9's start rescan gains the "edit to a slim-acked row" shape it was structurally blind to.
+   That is a gain; 5.3b's ledger remains the guard for a change that dies before its ack.

@@ -14,6 +14,12 @@
   // outcome (success or failure — the failure handlers then re-enqueue through the ledger), and
   // drain at start via the existing `enqueueLocallyPendingChanges`.
   //
+  // ⚠️ Patch 15 narrowed the first of those shapes on a real device — a row that went through the
+  // batch builder now leaves its slim ack with a real mirror, so a later edit to it IS mirror-behind
+  // and the rescan does see it. The ledger is still the only guard for a change that dies BEFORE its
+  // ack, which is what these tests kill. The NULL-mirror row below is made by injecting an ack with
+  // no batch build.
+  //
   // The kill shape is `stop()` → `start()` as in EngineStartRescanTests: the mock engines and
   // their in-memory pending state die with `stop()`, while the durable ledger survives.
   //

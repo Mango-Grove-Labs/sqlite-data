@@ -118,6 +118,19 @@
     /// `encryptedValues`, which only the all-fields archive carries.
     public let serverUserModificationTime: Int64?
 
+    /// The `userModificationTime` carried by the record this device most recently put on the wire
+    /// for this row, kept across the batch → ack boundary (MonteSprout fork, patch 15).
+    ///
+    /// `nil` means nothing is in flight. It is written when the batch is built — the only moment the
+    /// stamp being sent is knowable — and consumed by the outcome that settles that batch: a
+    /// successful ack moves it into ``serverUserModificationTime`` (the server now holds a record
+    /// carrying it), a failed save discards it. It exists because a real CloudKit save ack arrives
+    /// without the encrypted custom fields, so the ack itself cannot say which stamp landed, and
+    /// patch 7's rule forbids inventing one. A further local edit may land inside that window; it
+    /// bumps ``userModificationTime`` and not this, which is exactly why such a row still reads as
+    /// an unsent edit after the ack.
+    public let sentUserModificationTime: Int64?
+
     public var hasLastKnownServerRecord: Bool {
       lastKnownServerRecord != nil
     }
@@ -182,7 +195,8 @@
       _lastKnownServerRecordAllFields: CKRecord? = nil,
       share: CKShare? = nil,
       userModificationTime: Int64,
-      serverUserModificationTime: Int64? = nil
+      serverUserModificationTime: Int64? = nil,
+      sentUserModificationTime: Int64? = nil
     ) {
       self.id = ID(recordPrimaryKey: recordPrimaryKey, recordType: recordType)
       self.recordName = "\(recordPrimaryKey):\(recordType)"
@@ -205,6 +219,7 @@
       self._isShared = share != nil
       self.userModificationTime = userModificationTime
       self.serverUserModificationTime = serverUserModificationTime
+      self.sentUserModificationTime = sentUserModificationTime
       self._isDeleted = false
     }
 

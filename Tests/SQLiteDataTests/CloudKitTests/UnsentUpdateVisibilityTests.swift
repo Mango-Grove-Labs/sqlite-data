@@ -57,6 +57,21 @@
         }
       }
 
+      /// Patch 15's column, read as SQL sees it: the stamp the record currently in flight carries,
+      /// recorded when the batch was built and cleared by the outcome that settles it.
+      @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
+      private func inFlightStamp() async throws -> Int64? {
+        try await syncEngine.metadatabase.read { db in
+          try Int64.fetchOne(
+            db,
+            sql: #"""
+              SELECT "sentUserModificationTime" FROM "sqlitedata_icloud_metadata"
+               WHERE "recordPrimaryKey" = '1' AND "recordType" = 'remindersLists'
+              """#
+          )
+        }
+      }
+
       /// The consumer-side predicate the mirror exists to enable (MonteSprout's unsent-edit count).
       @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
       private func unsentEdits() async throws -> Int {
@@ -321,30 +336,33 @@
         ])
       }
 
-      /// Characterization, NOT a fixed behavior — the residual patch 14 deliberately leaves standing.
-      /// A row that arrived by FETCH carries a real mirror stamp; edit it and upload it, and the only
-      /// thing that could level the mirror again is the save ack — which real CloudKit delivers without
-      /// the encrypted fields, so patch 7's F2 rule (never invent a stamp) leaves it behind. The row
-      /// then reads as an unsent edit after its edit has landed. Fixing it needs the stamp the SENT
-      /// record carried, which nothing currently keeps across the batch → ack boundary; that is its own
-      /// slice. Pinned here so the next reading of "Unsent edits > 0" is not re-diagnosed from scratch.
+      /// PATCH 15 — the residual patch 14 left standing, now closed (this test replaces the
+      /// characterization that pinned it, `aSlimAckCannotLevelTheMirrorOfAFetchedRow`). A mirror that
+      /// sits behind its row's local stamp can only be levelled by something that knows the stamp on
+      /// the server's copy — and the save ack real CloudKit delivers carries no encrypted fields at
+      /// all, so patch 7's F2 rule correctly refuses to read one off it. The stamp is not unknown,
+      /// though: it is the one the record this device SENT carried. The batch builder now records it
+      /// and a successful ack moves it into the mirror, so the row stops reading as an unsent edit
+      /// once its edit has landed (and patch 9's start rescan stops re-enqueueing it every launch).
+      ///
+      /// ⚠️ The behind-mirror is reached here by a **fetch that lands while the save is in flight**,
+      /// not by the field's own ordering, and that is a harness limitation worth knowing: a mocked
+      /// record has no `modificationDate` (nothing can set one — it is a read-only system field), so
+      /// `refreshLastKnownServerRecord`'s "is this newer than what I have" guard always answers yes
+      /// and the mock's batch build levels a confirmed row's mirror optimistically. Real CloudKit's
+      /// records DO carry the date, that guard skips, and the mirror stays behind until an ack — the
+      /// state this fetch reproduces exactly.
       @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
-      @Test func aSlimAckCannotLevelTheMirrorOfAFetchedRow() async throws {
-        // The row arrives from the server, so the mirror holds a real stamp (not the NULL an
-        // upload-only row keeps under the F2 rule).
-        let serverRecord = CKRecord(
-          recordType: RemindersList.tableName,
-          recordID: RemindersList.recordID(for: 1)
+      @Test func aSlimAckLevelsTheMirrorFromTheStampTheSentRecordCarried() async throws {
+        try await userDatabase.userWrite { db in
+          try db.seed { RemindersList(id: 1, title: "Personal") }
+        }
+        try await syncEngine.processPendingRecordZoneChanges(scope: .private)
+        // The server's copy as it stands before the edit — the one a fetch round can still deliver
+        // while that edit is on its way up.
+        let staleServerCopy = try syncEngine.private.database.record(
+          for: RemindersList.recordID(for: 1)
         )
-        serverRecord.setValue("1", forKey: "id", at: now)
-        serverRecord.setValue("Personal", forKey: "title", at: now)
-        _ = try syncEngine.modifyRecords(scope: .private, saving: [serverRecord])
-        await syncEngine.handleFetchedRecordZoneChanges(
-          modifications: [serverRecord],
-          syncEngine: syncEngine.private
-        )
-        #expect(try await mirroredServerStamp() != nil)
-        #expect(try await unsentEdits() == 0)
 
         try await withDependencies {
           $0.currentTime.now += 60
@@ -354,8 +372,33 @@
           }
         }
         #expect(try await unsentEdits() == 1)  // correct: the edit is genuinely unsent
+        let edited = try await modificationTimes()
 
-        // The save lands, and CloudKit's ack carries system fields only.
+        // The save goes out through the real batch builder — the only place that can know which
+        // stamp this device put on the wire — and lands on the server.
+        _ = try await syncEngine.sendPendingRecordZoneChanges(scope: .private)
+        #expect(try await inFlightStamp() == edited.local)
+        #expect(
+          try syncEngine.private.database
+            .record(for: RemindersList.recordID(for: 1))
+            .encryptedValues["title"] as? String == "Renamed"
+        )
+
+        // A fetch round delivers the server's older copy before the ack arrives. Patch 14 puts the
+        // stamp that copy CARRIED in the mirror, so the mirror is now behind — the field's state.
+        await withDependencies {
+          $0.currentTime.now += 30
+        } operation: {
+          await syncEngine.handleFetchedRecordZoneChanges(
+            modifications: [staleServerCopy],
+            syncEngine: syncEngine.private
+          )
+        }
+        #expect(try await mirroredServerStamp() != edited.local)
+        #expect(try await unsentEdits() == 1)
+
+        // CloudKit's ack carries system fields only; `changes.receive()` is deliberately NOT used
+        // here, because the mock echoes a FULL record and real CloudKit does not.
         let slimAck = CKRecord(
           recordType: RemindersList.tableName,
           recordID: RemindersList.recordID(for: 1)
@@ -364,12 +407,104 @@
           savedRecords: [slimAck],
           syncEngine: syncEngine.private
         )
-        // The edit HAS landed, and the count still says 1. This is the residual.
+        // The edit has landed and the count says so, from the stamp the sent record carried.
+        #expect(try await mirroredServerStamp() == edited.local)
+        #expect(try await unsentEdits() == 0)
+      }
+
+      /// The window the sent stamp has to survive: a further local edit can land between the batch
+      /// build and the ack. The ack must level the mirror to the stamp that was actually SENT, never
+      /// to the row's current local stamp — otherwise the newer edit is declared settled and the save
+      /// the trigger just enqueued reads as nothing to do.
+      @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
+      @Test func anEditBetweenTheBatchAndTheAckIsStillUnsent() async throws {
+        try await userDatabase.userWrite { db in
+          try db.seed { RemindersList(id: 1, title: "Personal") }
+        }
+        try await syncEngine.processPendingRecordZoneChanges(scope: .private)
+
+        try await withDependencies {
+          $0.currentTime.now += 60
+        } operation: {
+          try await userDatabase.userWrite { db in
+            try RemindersList.find(1).update { $0.title = "Renamed" }.execute(db)
+          }
+        }
+        let sent = try await modificationTimes().local
+        _ = try await syncEngine.sendPendingRecordZoneChanges(scope: .private)
+
+        // The edit that lands in the window. It is a genuine user write: it enqueues its own save.
+        try await withDependencies {
+          $0.currentTime.now += 120
+        } operation: {
+          try await userDatabase.userWrite { db in
+            try RemindersList.find(1).update { $0.title = "Renamed again" }.execute(db)
+          }
+        }
+        let slimAck = CKRecord(
+          recordType: RemindersList.tableName,
+          recordID: RemindersList.recordID(for: 1)
+        )
+        await syncEngine.handleSentRecordZoneChanges(
+          savedRecords: [slimAck],
+          syncEngine: syncEngine.private
+        )
+
+        let times = try await modificationTimes()
+        #expect(try await mirroredServerStamp() == sent)
+        #expect(sent < times.local)
         #expect(try await unsentEdits() == 1)
 
+        // Drain the second edit's pending save for the harness's teardown invariant.
         syncEngine.private.state.assertPendingRecordZoneChanges([
           .saveRecord(RemindersList.recordID(for: 1))
         ])
+      }
+
+      /// The column's invariant, read directly: it means "a record carrying this stamp is in flight",
+      /// so every settled outcome — a successful ack and a failed save alike — must leave it empty. A
+      /// stamp that outlives its batch is a stamp some later ack could move into the mirror.
+      @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
+      @Test func aSettledOutcomeLeavesNothingInFlight() async throws {
+        try await userDatabase.userWrite { db in
+          try db.seed { RemindersList(id: 1, title: "Personal") }
+        }
+        _ = try await syncEngine.sendPendingRecordZoneChanges(scope: .private)
+        #expect(try await inFlightStamp() != nil)  // the batch build recorded what it put on the wire
+
+        let slimAck = CKRecord(
+          recordType: RemindersList.tableName,
+          recordID: RemindersList.recordID(for: 1)
+        )
+        await syncEngine.handleSentRecordZoneChanges(
+          savedRecords: [slimAck],
+          syncEngine: syncEngine.private
+        )
+        #expect(try await inFlightStamp() == nil)
+
+        // And the failure direction: the batch's stamp is just as settled when the save is refused.
+        try await withDependencies {
+          $0.currentTime.now += 60
+        } operation: {
+          try await userDatabase.userWrite { db in
+            try RemindersList.find(1).update { $0.title = "Renamed" }.execute(db)
+          }
+        }
+        _ = try await syncEngine.sendPendingRecordZoneChanges(scope: .private)
+        #expect(try await inFlightStamp() != nil)
+
+        let failed = CKRecord(
+          recordType: RemindersList.tableName,
+          recordID: RemindersList.recordID(for: 1)
+        )
+        // The handler reports the dropped save (patch 2), hence `withKnownIssue`.
+        await withKnownIssue {
+          await syncEngine.handleSentRecordZoneChanges(
+            failedRecordSaves: [(failed, CKError(.serverRejectedRequest))],
+            syncEngine: syncEngine.private
+          )
+        }
+        #expect(try await inFlightStamp() == nil)
       }
 
       /// The hardest direction, and the one a "declare the row clean on apply" fix would get wrong: an

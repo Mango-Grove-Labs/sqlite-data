@@ -2,7 +2,7 @@
 
 - **Project:** sqlite-data (Mango fork of pointfreeco/sqlite-data)
 - **Target milestone:** Consumer-clearing patches done — reached (5.3a + 5.3b closed the re-open); stop for review (then Phase 4 → "Open patch work done")
-- **Status:** `milestone-reached` (Phase-5 milestone stands; the 1.10.0 retarget + patch 10 also landed on `mango/patches-1.10`, now the adopted consumer base; Phase 8 — patches 11/12 for MonteSprout 51.1 — Phase 9 — patch 13 — and Phase 10 — patch 14, both for its 55.2b — landed on top)
+- **Status:** `milestone-reached` (Phase-5 milestone stands; the 1.10.0 retarget + patch 10 also landed on `mango/patches-1.10`, now the adopted consumer base; Phase 8 — patches 11/12 for MonteSprout 51.1 — Phase 9 — patch 13 — and Phase 10 — patches 14 + 15, for its 55.2b/55b.7 — landed on top)
 - **Updated:** 2026-08-23
 
 ---
@@ -55,20 +55,22 @@
   - [x] 8.2 Patch 12 — `willDeleteRecordsInZone(scope:reason:)` delegate hook fires before a zone purge (the fork's first additive-API patch; MangoSync is the consumer)
 - [x] **Phase 9 — The revocation event shape (MonteSprout Phase 55.2b)** _(red-first; evidence: the consumer's `docs/research/2026-08-23-two-account-session-findings.md` § F13)_
   - [x] 9.1 Patch 13 — a revoked participant is told by RECORD deletions, not a zone deletion → the fork's second additive delegate method, `willDeleteSharedRootRecords:inZone:` (review rejected reusing the zone hook: one owner zone holds several shared hierarchies)
-- [ ] **Phase 10 — The ledger's false positive on applied records (MonteSprout Phase 55.2b-2)** _(red-first; evidence: the consumer's `docs/research/2026-08-23-two-account-session-findings.md` § F4)_
+- [x] **Phase 10 — The ledger's false positive on applied records (MonteSprout Phase 55.2b-2)** _(red-first; evidence: the consumer's `docs/research/2026-08-23-two-account-session-findings.md` § F4)_
   - [x] 10.1 Patch 14 — a write the sync engine performed is not a user modification → the `isSynchronizing` guard on the trigger's `userModificationTime`, the mirror taking the stamp the server record CARRIED, and the repair migration patch 9's rescan needs
-  - [ ] 10.2 The slim-ack residual — a fetched-then-locally-edited row's mirror can never be leveled again (real CloudKit acks carry no encrypted fields), so it reads unsent after its edit has landed and patch 9 re-enqueues it once per launch. Needs the stamp the **sent** record carried kept across the batch → ack boundary (a new column, written at batch build, moved on a successful ack — a further local edit can land in that window). Pinned as CURRENT behavior by `aSlimAckCannotLevelTheMirrorOfAFetchedRow`; invert that test when this lands _(`MANGO-PATCHES.md` § 14 Residual)_
+  - [x] 10.2 Patch 15 — the slim-ack residual → the stamp the SENT record carried is written down at batch build and moved into the mirror by its ack _(`MANGO-PATCHES.md` § 15)_
 
 ---
 
 ## Current Status
 
-- **Current phase / sub-phase:** Phase 10 — patch 14 in (10.1); its slim-ack residual (10.2) open
+- **Current phase / sub-phase:** Phase 10 COMPLETE — patches 14 (10.1) and 15 (10.2) both in
 - **State:** milestone-reached (the Phase-5 milestone stop still stands; the retarget, patch 10 and Phases 8–10 were requested outside this repo's roadmap and do not move it)
-- **Last completed:** 10.1 — patch 14, the ledger's false positive on applied records. Mechanism traced from the F4 field reading: the user tables' `after_update` trigger is the one metadata trigger with no `isSynchronizing` guard, so the sync engine's own apply write stamped the local time while the mirror took the server's. Both halves guarded 5.3a-style (neutralize in place, never revert): restoring `$currentTime()` reddens the two apply tests; dropping `carriedServerModificationTime ??` reddens the already-unsent test; `WHERE 0` in the migration reddens its test with 5.3a's staying green.
-- **Build:** green · **Tests:** green — **346 tests, ZERO failures** on this branch (2026-08-23) · **Simulator-verified:** n/a
-- ⚠ **Patch 14 shrinks patch 9's re-enqueue loop, it does not close it** (10.2). A row that arrived by fetch and was then edited locally still reads unsent after its edit lands, because only a fetch can level a mirror — real CloudKit's save ack carries no encrypted stamp and patch 7's F2 rule correctly refuses to invent one.
-- ⚠ **The repair migration is data-only but it is still a NEW migration** — never edit a released one; keep it registered last and its name byte-stable.
+- **Last completed:** 10.2 — patch 15, the stamp the SENT record carried survives to its ack. The batch builder writes `sentUserModificationTime` for every record in the batch it returns; a successful ack moves it into the mirror with `coalesce(max(mirror, sent), sent, mirror)`, a refused save discards it. Guarded 5.3a-style: dropping the batch-build call or emptying the ack move reddens the inversion + invariant tests; emptying the failure clear reddens the invariant test alone; levelling from the row's *current* stamp instead of the sent one reddens the window test **and** three existing F2/F10 tests — that shortcut is the invention patches 7 and 9 exist to prevent.
+- **Build:** green · **Tests:** green — **348 tests, ZERO failures** on this branch (2026-08-23) · **Simulator-verified:** n/a
+- ⚠ **The stamp is read off the RECORD in the batch, never off the metadata row** — `CKRecord.userModificationTime`'s setter takes a `max`, so an outgoing record can carry a higher stamp than its metadata, and what is on the wire is what the server holds.
+- ⚠ **The harness cannot reproduce the field's ordering.** A mocked record has no `modificationDate` (read-only system field — nothing can set one), so `refreshLastKnownServerRecord`'s newer-than-mine guard always answers yes and the mock's batch build levels a confirmed row's mirror optimistically; real CloudKit's does not. Patch 15's inversion test reaches the behind-mirror state through a fetch that lands while the save is in flight — do not "simplify" that fetch away.
+- ⚠ **Patch 15 narrows the NULL-mirror slim-ack shape in the field, it does not delete the rule.** Batch-built rows now leave their ack with a real mirror, so patch 9's rescan gains the "edit to a slim-acked row" shape; NULL is still "unknown, never a trigger", and 5.3b's ledger is still the only guard for a change that dies before its ack.
+- ⚠ **Both repair migrations are data-only but they are still NEW migrations** — never edit a released one; keep names byte-stable, patch 15's registered **last**, patch 14's second-to-last.
 - ⚠ **Patch 13 is INERT until a consumer implements `willDeleteSharedRootRecords:inZone:`** — a pin bump alone restores no revocation notice. MangoSync's `SharedZoneLifecycle` and its host both need the record-granular shape; that adoption is MonteSprout's own 55.2b slice. The shipped pin `c97c703` is the Phase-8 tip.
 - ⚠ **Patch 12 alone is inert for the case it was written for.** Real CloudKit never deletes a revoked participant's zone, so that hook only ever fires for a zone the owner deleted or purged outright. Never read it as the revocation signal.
 - ⚠ **Never make patch 13's default implementation forward to patch 12's hook.** One owner zone holds every hierarchy she shares out of it, so a zone-wide notice for the loss of one hierarchy makes a consumer destroy local data for records it still has. That is why the two hooks stay separate.
@@ -85,12 +87,11 @@ checkout of tag 1.10.0 and on a 5.3b revert — which is what identified the cau
 
 ## Next Concrete Action
 
-> **Resume with 4.1** — the base question that sat here is settled (see below), and nothing else in
-> this repo is release-blocking. **10.2** (the slim-ack residual patch 14 left standing) is the one
-> new open item and is not a MonteSprout cut blocker. (MonteSprout-side: its 55.2b round's remaining
-> work is app-side — the pin bump carrying patches 13 + 14, `SharedRoomRemoval` narrowed to the
-> notified roots, and a participant "Leave classroom" over patch 11 — and lives in that repo, not
-> here.)
+> **Resume with 4.1** — the base question that sat here is settled (see below), and nothing in this
+> repo is open or release-blocking: Phase 10 closed with patch 15, so the patch stack has no known
+> residual. ⚠ Patches 13, 14 and 15 are **inert for MonteSprout until it bumps its pin** (still
+> `d84eeaa`, the patch-14 tip) — that bump is `/mango-update`'s job in that repo, never a side effect
+> of work here.
 >
 > **Settled 2026-08-16: the consumer base is `mango/patches-1.10` @ `e18249a`.** Decided by action —
 > MangoSync 0.7.2 pins it and every Mango app has been bumped in lockstep to that same revision and

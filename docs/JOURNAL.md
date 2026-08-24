@@ -296,3 +296,32 @@ by neutralizing its own half in place; the 5.3a fixture's non-sentinel row moved
 since a behind-mirror there is now nulled further down the migrator. Full suite **346/346**.
 ⚠ Residual, split out as 10.2: only a fetch can level a mirror, so a fetched-then-locally-edited row
 still reads unsent after its edit lands. Patch 14 shrinks patch 9's loop; it does not close it.
+
+## 2026-08-23 — Phase 10.2: patch 15, the stamp the SENT record carried survives to its ack
+
+Patch 14's residual, closed. A mirror sitting behind its row's local stamp can only be levelled by
+something that knows the stamp on the server's copy, and real CloudKit's save ack carries no
+encrypted fields at all — so a row that arrived by fetch, was edited locally and had that edit
+accepted kept reading as an unsent edit forever, with patch 9 re-enqueueing it once per launch. The
+missing knowledge was never missing: this device stamped the record it sent. A new nullable metadata
+column, `sentUserModificationTime`, is written for every record in the batch the builder is about to
+return (read off `batch.recordsToSave` — one write for the batch, and only records that made it), and
+the outcome settles it: a successful ack moves it into the mirror with
+`coalesce(max(mirror, sent), sent, mirror)`, a refused save discards it. The `max` is the load-bearing
+part — a fetch landing in the same window can already have put a newer stamp there, and the mirror
+must never move backwards. A further local edit inside the window bumps `userModificationTime` and
+not the sent stamp, so such a row still reads unsent, which is the truth.
+
+Two things worth carrying forward. The stamp is read off the **record**, not the metadata row:
+`CKRecord.userModificationTime`'s setter takes a max, so the outgoing record can carry a higher stamp
+than the metadata, and what is on the wire is what the server holds. And the harness cannot reproduce
+the field's ordering — a mocked record has no `modificationDate`, so the mock's batch build levels a
+confirmed row's mirror optimistically where real CloudKit's does not; the inversion test reaches the
+behind-mirror state through a fetch that lands while the save is in flight, and says so in its
+docstring. Three tests (the inversion of `aSlimAckCannotLevelTheMirrorOfAFetchedRow`, the
+edit-in-the-window guard, the column's settled-means-empty invariant), each verified by neutralizing
+its own half in place; levelling from the row's current stamp instead of the sent one reddens three
+existing F2/F10 tests, which is the fork telling you that shortcut is the bug patches 7 and 9 exist
+for. New migration registered last, no backfill. Snapshots re-recorded in 12 files (the column shows
+in every `SyncMetadata` dump, always `nil` — the settled state). Full suite **348/348**.
+⚠ Inert for consumers until a pin bump: MonteSprout still ships patch 14's residual until it adopts.

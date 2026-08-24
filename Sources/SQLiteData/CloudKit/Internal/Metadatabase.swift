@@ -215,6 +215,23 @@
       )
       .execute(db)
     }
+    // MonteSprout fork (PATCH 15, the F4 residual): keep the stamp the SENT record carried across the
+    // batch → ack boundary. A real CloudKit save ack arrives without the encrypted custom fields, so
+    // nothing in it can say which `userModificationTime` landed — and patch 7's rule rightly forbids
+    // inventing one. The batch builder does know, because it is the code that stamps the outgoing
+    // record; this column is where it writes that stamp down until the ack (or the failure) settles
+    // it. No backfill: at upgrade time nothing this process could know about is in flight, and NULL
+    // already means exactly that. A NEW migration, never an edit to a released one — the DEBUG
+    // assertion below enforces that, and this one now holds the "registered last" slot.
+    migrator.registerMigration("Mango: carry the sent userModificationTime to the ack") { db in
+      try #sql(
+        """
+        ALTER TABLE "\(raw: .sqliteDataCloudKitSchemaName)_metadata"
+        ADD COLUMN "sentUserModificationTime" INTEGER
+        """
+      )
+      .execute(db)
+    }
 
     #if DEBUG
       try metadatabase.read { db in

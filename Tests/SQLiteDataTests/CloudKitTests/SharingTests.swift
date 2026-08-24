@@ -504,7 +504,8 @@
           │   _hasLastKnownServerRecord: true,                                                                  │
           │   _isShared: true,                                                                                  │
           │   userModificationTime: 0,                                                                          │
-          │   serverUserModificationTime: 0                                                                     │
+          │   serverUserModificationTime: 0,                                                                    │
+          │   sentUserModificationTime: nil                                                                     │
           │ )                                                                                                   │
           └─────────────────────────────────────────────────────────────────────────────────────────────────────┘
           """
@@ -588,7 +589,8 @@
           │   _hasLastKnownServerRecord: true,                                                           │
           │   _isShared: true,                                                                           │
           │   userModificationTime: 0,                                                                   │
-          │   serverUserModificationTime: 0                                                              │
+          │   serverUserModificationTime: 0,                                                             │
+          │   sentUserModificationTime: nil                                                              │
           │ )                                                                                            │
           ├──────────────────────────────────────────────────────────────────────────────────────────────┤
           │ SyncMetadata(                                                                                │
@@ -624,7 +626,8 @@
           │   _hasLastKnownServerRecord: true,                                                           │
           │   _isShared: false,                                                                          │
           │   userModificationTime: 60,                                                                  │
-          │   serverUserModificationTime: 60                                                             │
+          │   serverUserModificationTime: 60,                                                            │
+          │   sentUserModificationTime: nil                                                              │
           │ )                                                                                            │
           ├──────────────────────────────────────────────────────────────────────────────────────────────┤
           │ SyncMetadata(                                                                                │
@@ -660,7 +663,8 @@
           │   _hasLastKnownServerRecord: true,                                                           │
           │   _isShared: false,                                                                          │
           │   userModificationTime: 60,                                                                  │
-          │   serverUserModificationTime: 60                                                             │
+          │   serverUserModificationTime: 60,                                                            │
+          │   sentUserModificationTime: nil                                                              │
           │ )                                                                                            │
           └──────────────────────────────────────────────────────────────────────────────────────────────┘
           """
@@ -1257,7 +1261,8 @@
           │   _hasLastKnownServerRecord: true,                                                                  │
           │   _isShared: true,                                                                                  │
           │   userModificationTime: 0,                                                                          │
-          │   serverUserModificationTime: 0                                                                     │
+          │   serverUserModificationTime: 0,                                                                    │
+          │   sentUserModificationTime: nil                                                                     │
           │ )                                                                                                   │
           ├─────────────────────────────────────────────────────────────────────────────────────────────────────┤
           │ SyncMetadata(                                                                                       │
@@ -1294,7 +1299,8 @@
           │   _hasLastKnownServerRecord: true,                                                                  │
           │   _isShared: false,                                                                                 │
           │   userModificationTime: 0,                                                                          │
-          │   serverUserModificationTime: 0                                                                     │
+          │   serverUserModificationTime: 0,                                                                    │
+          │   sentUserModificationTime: nil                                                                     │
           │ )                                                                                                   │
           └─────────────────────────────────────────────────────────────────────────────────────────────────────┘
           """
@@ -1942,7 +1948,8 @@
           │   _hasLastKnownServerRecord: true,                                                           │
           │   _isShared: false,                                                                          │
           │   userModificationTime: 0,                                                                   │
-          │   serverUserModificationTime: 0                                                              │
+          │   serverUserModificationTime: 0,                                                             │
+          │   sentUserModificationTime: nil                                                              │
           │ )                                                                                            │
           ├──────────────────────────────────────────────────────────────────────────────────────────────┤
           │ SyncMetadata(                                                                                │
@@ -1979,7 +1986,8 @@
           │   _hasLastKnownServerRecord: true,                                                           │
           │   _isShared: true,                                                                           │
           │   userModificationTime: 0,                                                                   │
-          │   serverUserModificationTime: 0                                                              │
+          │   serverUserModificationTime: 0,                                                             │
+          │   sentUserModificationTime: nil                                                              │
           │ )                                                                                            │
           ├──────────────────────────────────────────────────────────────────────────────────────────────┤
           │ SyncMetadata(                                                                                │
@@ -2015,7 +2023,8 @@
           │   _hasLastKnownServerRecord: true,                                                           │
           │   _isShared: false,                                                                          │
           │   userModificationTime: 1,                                                                   │
-          │   serverUserModificationTime: 1                                                              │
+          │   serverUserModificationTime: 1,                                                             │
+          │   sentUserModificationTime: nil                                                              │
           │ )                                                                                            │
           ├──────────────────────────────────────────────────────────────────────────────────────────────┤
           │ SyncMetadata(                                                                                │
@@ -2051,7 +2060,8 @@
           │   _hasLastKnownServerRecord: true,                                                           │
           │   _isShared: false,                                                                          │
           │   userModificationTime: 0,                                                                   │
-          │   serverUserModificationTime: 0                                                              │
+          │   serverUserModificationTime: 0,                                                             │
+          │   sentUserModificationTime: nil                                                              │
           │ )                                                                                            │
           └──────────────────────────────────────────────────────────────────────────────────────────────┘
           """
@@ -2251,7 +2261,8 @@
           │   _hasLastKnownServerRecord: true,                                                           │
           │   _isShared: false,                                                                          │
           │   userModificationTime: 0,                                                                   │
-          │   serverUserModificationTime: 0                                                              │
+          │   serverUserModificationTime: 0,                                                             │
+          │   sentUserModificationTime: nil                                                              │
           │ )                                                                                            │
           ├──────────────────────────────────────────────────────────────────────────────────────────────┤
           │ SyncMetadata(                                                                                │
@@ -2288,7 +2299,8 @@
           │   _hasLastKnownServerRecord: true,                                                           │
           │   _isShared: true,                                                                           │
           │   userModificationTime: 0,                                                                   │
-          │   serverUserModificationTime: 0                                                              │
+          │   serverUserModificationTime: 0,                                                             │
+          │   sentUserModificationTime: nil                                                              │
           │ )                                                                                            │
           ├──────────────────────────────────────────────────────────────────────────────────────────────┤
           │ SyncMetadata(                                                                                │
@@ -2324,7 +2336,8 @@
           │   _hasLastKnownServerRecord: true,                                                           │
           │   _isShared: false,                                                                          │
           │   userModificationTime: 0,                                                                   │
-          │   serverUserModificationTime: 0                                                              │
+          │   serverUserModificationTime: 0,                                                             │
+          │   sentUserModificationTime: nil                                                              │
           │ )                                                                                            │
           ├──────────────────────────────────────────────────────────────────────────────────────────────┤
           │ SyncMetadata(                                                                                │
@@ -2360,7 +2373,8 @@
           │   _hasLastKnownServerRecord: true,                                                           │
           │   _isShared: false,                                                                          │
           │   userModificationTime: 0,                                                                   │
-          │   serverUserModificationTime: 0                                                              │
+          │   serverUserModificationTime: 0,                                                             │
+          │   sentUserModificationTime: nil                                                              │
           │ )                                                                                            │
           └──────────────────────────────────────────────────────────────────────────────────────────────┘
           """
@@ -2560,7 +2574,8 @@
           │   _hasLastKnownServerRecord: true,                                                           │
           │   _isShared: false,                                                                          │
           │   userModificationTime: 0,                                                                   │
-          │   serverUserModificationTime: 0                                                              │
+          │   serverUserModificationTime: 0,                                                             │
+          │   sentUserModificationTime: nil                                                              │
           │ )                                                                                            │
           ├──────────────────────────────────────────────────────────────────────────────────────────────┤
           │ SyncMetadata(                                                                                │
@@ -2597,7 +2612,8 @@
           │   _hasLastKnownServerRecord: true,                                                           │
           │   _isShared: true,                                                                           │
           │   userModificationTime: 0,                                                                   │
-          │   serverUserModificationTime: 0                                                              │
+          │   serverUserModificationTime: 0,                                                             │
+          │   sentUserModificationTime: nil                                                              │
           │ )                                                                                            │
           ├──────────────────────────────────────────────────────────────────────────────────────────────┤
           │ SyncMetadata(                                                                                │
@@ -2633,7 +2649,8 @@
           │   _hasLastKnownServerRecord: true,                                                           │
           │   _isShared: false,                                                                          │
           │   userModificationTime: 0,                                                                   │
-          │   serverUserModificationTime: 0                                                              │
+          │   serverUserModificationTime: 0,                                                             │
+          │   sentUserModificationTime: nil                                                              │
           │ )                                                                                            │
           ├──────────────────────────────────────────────────────────────────────────────────────────────┤
           │ SyncMetadata(                                                                                │
@@ -2669,7 +2686,8 @@
           │   _hasLastKnownServerRecord: true,                                                           │
           │   _isShared: false,                                                                          │
           │   userModificationTime: 0,                                                                   │
-          │   serverUserModificationTime: 0                                                              │
+          │   serverUserModificationTime: 0,                                                             │
+          │   sentUserModificationTime: nil                                                              │
           │ )                                                                                            │
           └──────────────────────────────────────────────────────────────────────────────────────────────┘
           """
@@ -2849,7 +2867,8 @@
           │   _hasLastKnownServerRecord: true,                                                           │
           │   _isShared: false,                                                                          │
           │   userModificationTime: 0,                                                                   │
-          │   serverUserModificationTime: 0                                                              │
+          │   serverUserModificationTime: 0,                                                             │
+          │   sentUserModificationTime: nil                                                              │
           │ )                                                                                            │
           ├──────────────────────────────────────────────────────────────────────────────────────────────┤
           │ SyncMetadata(                                                                                │
@@ -2886,7 +2905,8 @@
           │   _hasLastKnownServerRecord: true,                                                           │
           │   _isShared: true,                                                                           │
           │   userModificationTime: 0,                                                                   │
-          │   serverUserModificationTime: 0                                                              │
+          │   serverUserModificationTime: 0,                                                             │
+          │   sentUserModificationTime: nil                                                              │
           │ )                                                                                            │
           ├──────────────────────────────────────────────────────────────────────────────────────────────┤
           │ SyncMetadata(                                                                                │
@@ -2922,7 +2942,8 @@
           │   _hasLastKnownServerRecord: true,                                                           │
           │   _isShared: false,                                                                          │
           │   userModificationTime: 1,                                                                   │
-          │   serverUserModificationTime: 1                                                              │
+          │   serverUserModificationTime: 1,                                                             │
+          │   sentUserModificationTime: nil                                                              │
           │ )                                                                                            │
           └──────────────────────────────────────────────────────────────────────────────────────────────┘
           """
@@ -3095,7 +3116,8 @@
           │   _hasLastKnownServerRecord: true,                                                           │
           │   _isShared: false,                                                                          │
           │   userModificationTime: 0,                                                                   │
-          │   serverUserModificationTime: 0                                                              │
+          │   serverUserModificationTime: 0,                                                             │
+          │   sentUserModificationTime: nil                                                              │
           │ )                                                                                            │
           ├──────────────────────────────────────────────────────────────────────────────────────────────┤
           │ SyncMetadata(                                                                                │
@@ -3132,7 +3154,8 @@
           │   _hasLastKnownServerRecord: true,                                                           │
           │   _isShared: true,                                                                           │
           │   userModificationTime: 0,                                                                   │
-          │   serverUserModificationTime: 0                                                              │
+          │   serverUserModificationTime: 0,                                                             │
+          │   sentUserModificationTime: nil                                                              │
           │ )                                                                                            │
           ├──────────────────────────────────────────────────────────────────────────────────────────────┤
           │ SyncMetadata(                                                                                │
@@ -3168,7 +3191,8 @@
           │   _hasLastKnownServerRecord: true,                                                           │
           │   _isShared: false,                                                                          │
           │   userModificationTime: 1,                                                                   │
-          │   serverUserModificationTime: 1                                                              │
+          │   serverUserModificationTime: 1,                                                             │
+          │   sentUserModificationTime: nil                                                              │
           │ )                                                                                            │
           ├──────────────────────────────────────────────────────────────────────────────────────────────┤
           │ SyncMetadata(                                                                                │
@@ -3204,7 +3228,8 @@
           │   _hasLastKnownServerRecord: true,                                                           │
           │   _isShared: false,                                                                          │
           │   userModificationTime: 0,                                                                   │
-          │   serverUserModificationTime: 0                                                              │
+          │   serverUserModificationTime: 0,                                                             │
+          │   sentUserModificationTime: nil                                                              │
           │ )                                                                                            │
           └──────────────────────────────────────────────────────────────────────────────────────────────┘
           """

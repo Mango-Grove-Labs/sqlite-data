@@ -1355,7 +1355,91 @@
         }
         return await open(table)
       }
+      // MANGO PATCH 15 — write down the stamp each record in this batch is carrying, before it goes
+      // out. This is the only moment it is knowable: the ack that comes back from real CloudKit has
+      // no encrypted fields on it, so it cannot say which `userModificationTime` the server accepted,
+      // and patch 7's F2 rule (never invent a stamp) rightly refuses to guess. Read off the batch
+      // rather than accumulated inside the provider closure above, so only records that actually made
+      // it into the batch are recorded, in one write for the whole batch.
+      if let batch {
+        await recordSentUserModificationTimes(batch.recordsToSave)
+      }
       return batch
+    }
+
+    /// MANGO PATCH 15 — see ``SyncMetadata/sentUserModificationTime``.
+    ///
+    /// Records the stamp each outgoing record carries. Deliberately reads the stamp off the record
+    /// itself rather than off the metadata row: the record is what is on the wire, and it can carry a
+    /// stamp the metadata does not (`CKRecord.userModificationTime`'s setter takes a max). A record
+    /// with no stamp at all records nothing — an absent stamp is unknown, never `-1` (patch 7's rule).
+    private func recordSentUserModificationTimes(_ records: [CKRecord]) async {
+      let sentStamps: [(recordID: CKRecord.ID, stamp: Int64)] = records.compactMap { record in
+        guard record.encryptedValues[CKRecord.userModificationTimeKey] != nil
+        else { return nil }
+        return (record.recordID, record.userModificationTime)
+      }
+      guard !sentStamps.isEmpty
+      else { return }
+      await withErrorReporting(.sqliteDataCloudKitFailure) {
+        try await userDatabase.write { db in
+          for (recordID, stamp) in sentStamps {
+            try SyncMetadata
+              .find(recordID)
+              .update { $0.sentUserModificationTime = #bind(stamp) }
+              .execute(db)
+          }
+        }
+      }
+    }
+
+    /// MANGO PATCH 15 — the ack half of ``SyncMetadata/sentUserModificationTime``.
+    ///
+    /// A successful save ack means the server now holds a record carrying the stamp this device sent,
+    /// so that stamp — and only that stamp — becomes the mirror. `max` rather than a plain assignment:
+    /// the mirror must never move backwards, because a fetch landing in the same window can already
+    /// have put a *newer* server copy's stamp there. A further local edit inside the window bumps
+    /// `userModificationTime` and not the sent stamp, so such a row keeps reading as unsent, which is
+    /// the truth — its newest bytes are not on the server.
+    private func levelMirrorsFromSentStamps(of recordIDs: [CKRecord.ID]) async {
+      guard !recordIDs.isEmpty
+      else { return }
+      await withErrorReporting(.sqliteDataCloudKitFailure) {
+        try await userDatabase.write { db in
+          try SyncMetadata
+            .findAll(recordIDs)
+            .update {
+              $0.serverUserModificationTime = #sql(
+                """
+                coalesce(\
+                max(\($0.serverUserModificationTime), \($0.sentUserModificationTime)), \
+                \($0.sentUserModificationTime), \
+                \($0.serverUserModificationTime)\
+                )
+                """
+              )
+              $0.sentUserModificationTime = #bind(nil)
+            }
+            .execute(db)
+        }
+      }
+    }
+
+    /// MANGO PATCH 15 — the failure half. A refused save settles its batch just as an ack does: the
+    /// stamp it was carrying never reached the server, so it must not survive to be moved into the
+    /// mirror by some later ack. (The next batch build overwrites it anyway; keeping the column's
+    /// meaning — "a record carrying this is in flight" — literally true is what makes that safe.)
+    private func clearSentUserModificationTimes(of recordIDs: [CKRecord.ID]) async {
+      guard !recordIDs.isEmpty
+      else { return }
+      await withErrorReporting(.sqliteDataCloudKitFailure) {
+        try await userDatabase.write { db in
+          try SyncMetadata
+            .findAll(recordIDs)
+            .update { $0.sentUserModificationTime = #bind(nil) }
+            .execute(db)
+        }
+      }
     }
 
     private func pendingRecordZoneChanges(
@@ -1893,6 +1977,12 @@
       for savedRecord in savedRecords {
         await refreshLastKnownServerRecord(savedRecord)
       }
+      // MANGO PATCH 15 — settle what this batch had in flight. The move runs AFTER the refresh above
+      // deliberately: when an ack DOES carry its encrypted fields (the mocked container, and whatever
+      // CloudKit chooses to echo) the record's own stamp is the better source and lands first; the
+      // `max` here then leaves it alone. A refused save discards its stamp instead of moving it.
+      await levelMirrorsFromSentStamps(of: savedRecords.map(\.recordID))
+      await clearSentUserModificationTimes(of: failedRecordSaves.map(\.record.recordID))
 
       // MANGO 5.3b — every reported outcome, success or failure, RESOLVES its durable ledger rows;
       // the failure handlers below then re-enqueue through the ledger (see the persist at the end),

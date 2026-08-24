@@ -20,9 +20,15 @@
   // durable table stays empty because the write happened on a *running* engine.
   //
   // The boundary is as load-bearing as the rescan: a confirmed row whose mirror is NULL (the
-  // slim-ack shape patch 7's F2 amendment leaves behind on real CloudKit) must NOT be selected —
-  // NULL is "unknown", and selecting it would degrade the targeted rescan into exactly the
-  // blanket reupload the consumer ruled out (stamp-stomp risk, blob rewrite cost, fleet re-fetch).
+  // slim-ack shape patch 7's F2 amendment leaves behind) must NOT be selected — NULL is "unknown",
+  // and selecting it would degrade the targeted rescan into exactly the blanket reupload the
+  // consumer ruled out (stamp-stomp risk, blob rewrite cost, fleet re-fetch).
+  //
+  // ⚠️ Patch 15 changed how often that shape OCCURS on a real device, not the rule: a row that went
+  // through the batch builder now comes out of its slim ack with a real mirror (the stamp the sent
+  // record carried). The shape is reached below by injecting an ack with **no batch build**, which
+  // is also every other slim-ack test's recipe — it stays reachable (a first ack after an upgrade,
+  // a record acked outside a batch this process built), and the NULL rule is unchanged.
   extension BaseCloudKitTests {
     @MainActor
     final class EngineStartRescanTests: BaseCloudKitTests, @unchecked Sendable {

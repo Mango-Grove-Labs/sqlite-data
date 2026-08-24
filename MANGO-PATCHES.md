@@ -677,18 +677,85 @@ never an edit to a released one.
   row was moved to a **level** mirror (60/60): a behind-mirror there is nulled by this migration
   further down the migrator and said nothing about 5.3a's `= -1` specificity either way.
 - ⚠️ **Rebase note.** Same class as patch 7 — re-record `TriggerTests`' inline snapshot after a
-  rebase (13 `userModificationTime = …` lines), and keep this migration registered last.
+  rebase (13 `userModificationTime = …` lines), and keep this migration registered second-to-last
+  (patch 15's took the last slot).
 
-**Residual, deliberately left standing (its own slice).** A row that arrived by **fetch** carries a
-real mirror stamp; edit it, upload it, and nothing can level the mirror again — real CloudKit's save
-ack carries no encrypted fields, and patch 7's F2 rule (never invent a stamp) correctly refuses it.
-That row reads as an unsent edit after its edit has landed, and patch 9 re-enqueues it once per
-launch. Closing it needs the stamp the **sent** record carried, which nothing currently keeps across
-the batch → ack boundary (a further local edit can land in that window — see
-`editBetweenBatchAndSentRecordZoneChanges`), i.e. a new column written at batch build and moved on a
-successful ack. Patch 14 shrinks the loop from *every fetched row* to *fetched-and-locally-edited*
-rows; it does not close it. Pinned by `aSlimAckCannotLevelTheMirrorOfAFetchedRow`, which asserts the
-**current** behavior — when the follow-up lands, that test is the one to invert.
+**Residual — closed by patch 15.** A row that arrived by **fetch** carries a real mirror stamp; edit
+it, upload it, and nothing *in the ack* can level the mirror again — real CloudKit's save ack carries
+no encrypted fields, and patch 7's F2 rule (never invent a stamp) correctly refuses it. That row read
+as an unsent edit after its edit had landed, and patch 9 re-enqueued it once per launch. Patch 14
+shrank the loop from *every fetched row* to *fetched-and-locally-edited* rows; § 15 below closes it,
+by keeping the stamp the **sent** record carried across the batch → ack boundary.
+
+### 15. The stamp the SENT record carried survives to its ack
+
+*MonteSprout Phase 55b.7 — patch 14's residual, tracked here as Phase 10.2. Not a cut blocker: it
+costs a bounded re-upload of rows the server already holds, never data.*
+
+Patch 14 left one shape standing. A mirror that sits **behind** its row's local stamp can only be
+levelled by something that knows the stamp on the server's copy, and there are exactly two candidates:
+a fetch (which carries it, and is what levels a re-delivered row) or the save ack. Real CloudKit's
+save ack has no encrypted fields on it at all, so it carries no stamp — and patch 7's F2 rule rightly
+refuses to invent one from the `?? -1` getter fallback. So a row that arrived by fetch, was edited
+locally and had that edit accepted by the server kept reading as an unsent edit forever, and patch 9's
+start rescan re-enqueued it once per launch.
+
+The stamp is not unknown, though. **This device stamped the record it sent**, in the batch builder,
+which is the one place that knows. The patch writes it down there and moves it on the outcome:
+
+- **`sentUserModificationTime` (INTEGER, nullable)**, a new metadata column. `nil` = nothing in
+  flight. `nextRecordZoneChangeBatch` writes it for every record in the batch it is about to return —
+  read off `batch.recordsToSave` rather than accumulated inside the record provider, so only records
+  that actually made the batch are recorded and the whole batch costs one write.
+- **The stamp comes off the RECORD, not the metadata row.** `CKRecord.userModificationTime`'s setter
+  takes a `max`, so an outgoing record built on an all-fields archive can carry a stamp *higher* than
+  `metadata.userModificationTime`. What is on the wire is what the server will hold. A record with no
+  stamp at all records nothing — absent stays unknown, never `-1` (patch 7's rule again).
+- **A successful ack moves it into the mirror; a failed save discards it.** The move is
+  `coalesce(max(mirror, sent), sent, mirror)` — a `max`, never a plain assignment, because the mirror
+  must not move backwards: a fetch landing in the same window can already have put a *newer* server
+  copy's stamp there. It runs **after** `refreshLastKnownServerRecord`, so an ack that *does* carry
+  its encrypted fields still wins on its own merits and the `max` leaves it alone.
+- **The window is the point.** A further local edit can land between batch build and ack (see
+  `editBetweenBatchAndSentRecordZoneChanges`). It bumps `userModificationTime` and not the sent
+  stamp, so the row still reads unsent after the ack — which is the truth: its newest bytes are not
+  on the server, and the trigger has already enqueued the save that will take them there.
+- **A new migration with no backfill.** At upgrade time nothing this process could know about is in
+  flight, and `NULL` already says exactly that. A NEW migration, never an edit to a released one.
+
+⚠️ **Side effect worth knowing: the NULL-mirror slim-ack shape largely goes away in the field.** § 7's
+F2 amendment left every slim-acked row with a `NULL` mirror ("unknown"), which is why §§ 9 and 5.3b
+describe an edit to such a row as *structurally invisible* to the start rescan — `NULL < x` is never
+true — leaving the durable pending ledger as its only guard. On real CloudKit those rows now come out
+of their ack with a **real** mirror, because they went through the batch builder first, so a later
+edit to one is mirror-behind and the rescan does see it. That is a gain, not a new risk: the stamp is
+one this device put on the wire, never the `?? -1` invention F2 forbids. 5.3b's ledger stays the
+guard for the shape patch 15 cannot reach — a change that dies **before** its ack. The tests in
+`EngineStartRescanTests` / `DurablePendingLedgerTests` still exercise the NULL-mirror shape because
+they inject an ack with no batch build; their comments say so.
+
+- **`UnsentUpdateVisibilityTests`** replaces the residual's characterization with its inversion,
+  `aSlimAckLevelsTheMirrorFromTheStampTheSentRecordCarried`, and adds
+  `anEditBetweenTheBatchAndTheAckIsStillUnsent` (the window) and `aSettledOutcomeLeavesNothingInFlight`
+  (the column's invariant, read as SQL, for both an ack and a refusal).
+- ⚠️ **Harness limitation, stated in the inversion test.** A mocked record has no `modificationDate`
+  — nothing can give it one, it is a read-only system field — so `refreshLastKnownServerRecord`'s
+  "is this newer than what I have" guard always answers yes and **the mock's batch build levels a
+  confirmed row's mirror optimistically**, which real CloudKit's does not. The inversion therefore
+  reaches the behind-mirror state through a **fetch that lands while the save is in flight** (patch
+  14's carried stamp puts the older server copy's stamp back in the mirror) rather than through the
+  field's own ordering. Same state, reached by real code paths; do not "simplify" that fetch away.
+- **Guards, verified 2026-08-23 in the 5.3a style — neutralize the mechanism in place, never revert
+  the commit.** Dropping the batch-build call reddens the inversion and the invariant test and only
+  those; emptying the ack-side move's ID list reddens the same two; emptying the failure clear's list
+  reddens the invariant test alone. Levelling from the row's **current** `userModificationTime`
+  instead of the sent stamp reddens the window test — and also, in the other two suites,
+  `aStamplessSaveAckNeverInventsAMirrorStamp`, `aKilledEditOnASlimAckedRowIsReEnqueuedAtStart` and
+  `confirmedRowsAreNotRescannedAtStart`, because that naive form *is* the F2 invention patches 7 and
+  9 exist to prevent.
+- ⚠️ **Rebase note.** Same class as patches 7 and 14 — the column appears in every `SyncMetadata`
+  dump, so re-record the inline snapshots after a rebase (12 test files carry them today), and keep
+  this migration registered **last**.
 
 ### Characterization — what a "waiting to upload" count derived from `lastKnownServerRecord` cannot see
 
