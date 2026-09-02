@@ -1247,19 +1247,43 @@
       #endif
 
       let batch = await syncEngine.recordZoneChangeBatch(pendingChanges: changes) { recordID in
-        guard
-          let (metadata, allFields) = await withErrorReporting(
-            .sqliteDataCloudKitFailure,
-            catching: {
-              try await metadatabase.read { db in
-                try SyncMetadata
-                  .find(recordID)
-                  .select { ($0, $0._lastKnownServerRecordAllFields) }
-                  .fetchOne(db)
-              }
+        // MANGO PATCH 8 — a failed READ is not a deletion. Upstream ran this read through
+        // `withErrorReporting(…) ?? nil` and then dropped the pending change on `nil`, which is
+        // reached by BOTH "the read threw" and "there is no such row". That conflation is the
+        // amplifier that turned the 1.0(12) decode bug into six days of silent, unrecoverable
+        // upload loss (MANGO-PATCHES § 8): the record left the queue permanently and no retry ever
+        // touched it again. Park a read failure instead — return `nil` for this batch WITHOUT
+        // removing the pending change from the engine's state or the durable ledger, so the next
+        // send (or, via the ledger, the next launch) tries again. Only a genuinely absent metadata
+        // row still leaves the queue.
+        //
+        // Written as an explicit `do`/`catch` on purpose: `withErrorReporting`'s optional-returning
+        // overload FLATTENS `R??` to `R?` all by itself, so no amount of unwrapping at the call site
+        // can recover the distinction — the failure has to be caught here.
+        let metadataRow: (SyncMetadata, CKRecord?)?
+        do {
+          metadataRow = try await metadatabase.read { db in
+            try SyncMetadata
+              .find(recordID)
+              .select { ($0, $0._lastKnownServerRecordAllFields) }
+              .fetchOne(db)
+          }
+        } catch {
+          // Matches `withErrorReporting`'s contract: report anything but a cancellation, and in
+          // both cases park rather than drop.
+          if !(error is CancellationError) {
+            reportIssue(error, .sqliteDataCloudKitFailure)
+          }
+          #if DEBUG
+            state.withValue {
+              $0.events.append("⚠️ Metadata read failed (parked)")
+              $0.recordTypes.append("")
+              $0.recordNames.append(recordID.recordName)
             }
-          )
-            ?? nil
+          #endif
+          return nil
+        }
+        guard let (metadata, allFields) = metadataRow
         else {
           syncEngine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
           // MANGO 5.3b — a drop-forever leaves the queue AND the ledger, or the start drain
@@ -1301,23 +1325,35 @@
           return nil
         }
         func open<T>(_: some SynchronizableTable<T>) async -> CKRecord? {
-          let row =
-            await withErrorReporting(.sqliteDataCloudKitFailure) {
-              // NB: Fake 'sending' result.
-              nonisolated(unsafe) var result: T.QueryOutput?
-              try await userDatabase.read { db in
-                result =
-                  try T
-                  .unscoped
-                  .where {
-                    #sql("\($0.primaryKey) = \(bind: metadata.recordPrimaryKey)")
-                  }
-                  .fetchOne(db)
-              }
-              return result
+          // MANGO PATCH 8 — the same conflation, one read later: the user-table row. A throw here is
+          // a corrupt row / schema mismatch / lock timeout, not a deletion, so it parks exactly like
+          // the metadata read above; only a row that is really gone leaves the queue.
+          // NB: Fake 'sending' result.
+          nonisolated(unsafe) var result: T.QueryOutput?
+          do {
+            try await userDatabase.read { db in
+              result =
+                try T
+                .unscoped
+                .where {
+                  #sql("\($0.primaryKey) = \(bind: metadata.recordPrimaryKey)")
+                }
+                .fetchOne(db)
             }
-            ?? nil
-          guard let row
+          } catch {
+            if !(error is CancellationError) {
+              reportIssue(error, .sqliteDataCloudKitFailure)
+            }
+            #if DEBUG
+              state.withValue {
+                $0.events.append("⚠️ Record read failed (parked)")
+                $0.recordTypes.append(metadata.recordType)
+                $0.recordNames.append(recordID.recordName)
+              }
+            #endif
+            return nil
+          }
+          guard let row = result
           else {
             syncEngine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
             await clearPersistedPendingRecordZoneChanges([.saveRecord(recordID)])

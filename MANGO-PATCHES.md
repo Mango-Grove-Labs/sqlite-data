@@ -370,21 +370,48 @@ rescan predicate needs to not degrade into a blanket reupload. Guarded by the tw
 `aStamplessReAck…` tests in `UnsentUpdateVisibilityTests` (verified red on the unpatched funnel,
 2026-08-15, on the `-1` mechanism itself).
 
-### 8. Planned — don't let a read failure masquerade as a deletion
+### 8. A read failure in the send path is parked, never mistaken for a deletion
 
-*Not yet implemented. Recorded here so the amplifier isn't forgotten once patch 3 hides it.*
+*MonteSprout incident 2026-07-18, item "the guard is arguably wrong" — the amplifier behind the
+1.0(12) outage; implemented 2026-09-02 on `mango/patches-1.10`.*
 
-`nextRecordZoneChangeBatch` (SyncEngine.swift:1132-1148) treats a failed metadata read exactly
-like a missing record: both fall through to
-`state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])`. That conflation is what turned
-the 0.33.1 decode bug into six days of *silent, unrecoverable* data loss rather than a visible
-error — the record left the queue permanently and no retry ever touched it again.
+`nextRecordZoneChangeBatch` builds every outgoing record from two reads — the record's `SyncMetadata`
+row, then the user-table row itself — and upstream ran both through `withErrorReporting(…) ?? nil`,
+dropping the pending change on `nil`. That `nil` is reached by **two different facts**: "the read
+threw" and "there is no such row". Conflating them is what turned the 0.33.1 decode bug into six
+days of *silent, unrecoverable* data loss rather than a visible error — the record left the upload
+queue permanently, its shape never changed, and nothing ever put it back.
 
-Patch 3 removes the trigger that was actually hit. It does nothing about the amplifier: any future
-read failure — a schema change, a corrupt row, a lock timeout — reproduces the same outage shape.
-The fix should follow patch 1's idiom: a read failure **parks or retries**, and only a genuinely
-absent record is dropped. Worth doing regardless of root cause (MonteSprout incident, "the guard is
-arguably wrong").
+Patch 3 removed the trigger that era actually hit. This patch removes the amplifier, so the next
+read failure — a schema change, a corrupt row, a lock timeout, a cancellation — costs a retry
+instead of the record: on a **throw**, the provider returns `nil` for this batch while leaving the
+`.saveRecord` in CKSyncEngine's state *and* in 5.3b's durable ledger, so the very next send retries
+it (and a process death in between is covered by the ledger's start drain). Only a genuinely absent
+row still runs `state.remove(pendingRecordZoneChanges:)` + `clearPersistedPendingRecordZoneChanges`
+— an absent row really is a deletion, and a record that never leaves the queue is its own bug.
+
+Both reads are patched, not just the metadata one the incident hit: they sit two statements apart in
+the same closure with the identical shape, and a corrupt user row (the decode class the incident
+*was*) fails at the second.
+
+⚠️ **The distinction cannot be recovered at the call site.** `withErrorReporting`'s
+optional-returning overload **flattens `R??` to `R?` itself** (xctest-dynamic-overlay
+`ErrorReporting.swift`), so upstream's `?? nil` was a no-op and no unwrapping there could tell the
+two apart. Both sites are therefore written as an explicit `do`/`catch` that re-reports through
+`reportIssue(error, .sqliteDataCloudKitFailure)` — identical telemetry, minus the flattening. Never
+"simplify" them back onto `withErrorReporting`: it silently restores the outage shape.
+
+Known limitation (same shape as patch 1's, deliberately): a **permanently** unreadable row re-enters
+the batch builder on every send round and reports each time, with no cap. A cap is a data-affecting
+policy the consumer chooses; loud-and-retrying beats silent-and-gone.
+
+Guard: `ReadFailureParkTests` injects each failure as a corrupt row — a garbage
+`_lastKnownServerRecordAllFields` blob (`NSKeyedUnarchiver` rejects it) for the metadata read, an
+unparseable `dueDate` string for the user-table read — and asserts the change is still queued, the
+ledger row still present and the server still stale, then that the repaired send delivers the edit.
+`anAbsentMetadataRowStillLeavesTheQueue` pins the boundary that must not drift. Vacuity-verified in
+the 5.3a style (neutralize in place, not `git revert`): re-adding the drop to either `catch` turns
+that branch's test red and leaves the other green.
 
 (Numbering note: this item briefly shared the number 4 with the asset-park patch while both were
 unwritten; the asset patch kept 4 on implementation, this one moved to 8.)
@@ -956,6 +983,13 @@ declares it unbounded (`from: "0.36.0"`), so patch 3 is still ours to carry. Not
    `setLastKnownServerRecord`, and its repair migration — metadatabase data-only, keep it registered
    LAST and its name byte-stable; also re-record `TriggerTests`' generated-SQL snapshot, which the
    trigger half changes on 13 lines)**,
+   **patch 15 (the `sentUserModificationTime` column + its two `SyncEngine` helpers —
+   `recordSentUserModificationTimes` at the end of `nextRecordZoneChangeBatch`,
+   `levelMirrorsFromSentStamps` on the ack, the discard on a refused save — and its repair migration,
+   metadatabase data-only, registered LAST, after patch 14's, name byte-stable)**,
+   **patch 8 (the two `do`/`catch` read-failure parks inside `nextRecordZoneChangeBatch`'s record
+   provider; a conflict resolved by taking upstream restores `withErrorReporting(…) ?? nil`, which
+   compiles fine and silently reinstates the drop — check both reads)**,
    the test
    commits (take them from the tip of the previous `mango/patches-*` branch). Resolve conflicts by **idiom, not line
    number** — the `SyncEngine` error-handling region drifts. Patch 3 conflicts every time, because the
@@ -1018,6 +1052,13 @@ declares it unbounded (`from: "0.36.0"`), so patch 3 is still ours to carry. Not
      **red** on `aShareDeletionOnAParticipantClearsTheCachedShare` (a recorded `.zoneNotFound` issue
      plus the stale cached share); restore → green. (Neutralize-in-place from the start — this patch
      shares `SyncEngine.swift` with the five whose bare reverts already rot.)
+   - Neutralize patch 8 in place (re-add `state.remove(pendingRecordZoneChanges:)` +
+     `clearPersistedPendingRecordZoneChanges` to either `catch` in `nextRecordZoneChangeBatch`'s
+     record provider) → `swift test --filter ReadFailureParkTests` must go **red** on
+     `aFailedMetadataReadParksTheRecord` for the metadata `catch` and on
+     `aFailedRecordReadParksTheRecord` for the user-row `catch` — each branch takes down only its own
+     test, and `anAbsentMetadataRowStillLeavesTheQueue` stays green either way (it pins the boundary);
+     restore → green.
    - Neutralize patch 12 in place (delete the notify loop at the top of
      `handleFetchedDatabaseChanges`) → `swift test --filter ZonePurgeDelegateTests` must go **red** on
      `aSharedZonePurgeNotifiesTheDelegateBeforeDeletingLocalRows` (zero notices), while
@@ -1026,7 +1067,7 @@ declares it unbounded (`from: "0.36.0"`), so patch 3 is still ours to carry. Not
 
    A rebase that skips these can silently drop a guard. **Before running any of them, read
    "Guard executability" above** — of the pre-Phase-8 guards only five still revert cleanly
-   (patch 10's is the fifth); patches 11 and 12 are **neutralize-in-place by definition** (above)
+   (patch 10's is the fifth); patches 8, 11 and 12 are **neutralize-in-place by definition** (above)
    and don't rot the same way. The byte-identity check described there is the check that actually
    rules out a dropped patch.
 

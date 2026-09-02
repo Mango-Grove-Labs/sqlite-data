@@ -2,7 +2,7 @@
 
 - **Project:** sqlite-data (Mango fork of pointfreeco/sqlite-data)
 - **Target milestone:** Consumer-clearing patches done — reached (5.3a + 5.3b closed the re-open); stop for review (then Phase 4 → "Open patch work done")
-- **Status:** `continue` — Phase 4 (the last open patch work) resumed; 4.1 in, 4.2 + 4.3 to go before the "Open patch work done" milestone. The Phase-5 consumer milestone stands; the 1.10.0 retarget, patch 10 and Phases 8–10 (patches 11–15) landed on `mango/patches-1.10`, the adopted consumer base.
+- **Status:** `continue` — Phase 4 (the last open patch work) resumed; 4.1 + 4.2 in, 4.3 to go before the "Open patch work done" milestone. The Phase-5 consumer milestone stands; the 1.10.0 retarget, patch 10 and Phases 8–10 (patches 11–15) landed on `mango/patches-1.10`, the adopted consumer base.
 - **Updated:** 2026-09-02
 
 ---
@@ -34,7 +34,7 @@
   - [x] 3.2 Patch 4 — a failed CKAsset download parks for retry, never writes NULL
 - [ ] **Phase 4 — Open library work**
   - [x] 4.1 Bound the remaining unbounded `from:` ranges in both manifests → all 11 bounded to the base tag's `Package.resolved` pins, guarded by `ManifestBoundsTests`
-  - [ ] 4.2 Patch 8 — a failed metadata read in `nextRecordZoneChangeBatch` parks/retries; only a genuinely absent record leaves the queue (`MANGO-PATCHES.md` § 8)
+  - [x] 4.2 Patch 8 — a failed read in `nextRecordZoneChangeBatch` parks/retries → both reads in the record provider, not only the metadata one
   - [ ] 4.3 `tearDownSyncEngine` drops triggers with `drop(ifExists: true)` so a failed `deleteLocalData()` clear is retryable in-process (`MANGO-PATCHES.md` § patch 5 known limitation)
 - [ ] 🏁 **MILESTONE: Open patch work done** ← stop for review
 - [ ] **Phase 5 — Consumer fix round: the 1.0(16) matrix findings (F2 + F10)** _(jumps the queue ahead of Phase 4 — release-blocking for MonteSprout; evidence: the consumer's `docs/incidents/2026-08-15-device-matrix-1.0.16.md`; scope prose: `MANGO-PATCHES.md` § 7 defect note + § 9 Planned)_
@@ -63,11 +63,13 @@
 
 ## Current Status
 
-- **Current phase / sub-phase:** Phase 4 in progress — 4.1 done; 4.2 (patch 8) and 4.3 (`drop(ifExists:)`) remain before the "Open patch work done" milestone
+- **Current phase / sub-phase:** Phase 4 in progress — 4.1 + 4.2 done; 4.3 (`drop(ifExists:)`) remains before the "Open patch work done" milestone
 - **State:** continue
-- **Last completed:** 4.1 — every dependency in `Package.swift` **and** `Package@swift-6.0.swift` is now `.upToNextMinor(from:)` at the version the base tag's own `Package.resolved` pins (GRDB `7.6.0`→`7.11.1` was the widest gap; 11 ranges in all). The resolved graph did not move — `Package.resolved` is byte-identical — so this narrows only what a *consumer's* resolver may pick. New `ManifestBoundsTests` parses both manifests as text and fails on any bare `from:` or any floor that drifts from `Package.resolved`, turning rebase step 5's eye-check into a guard; vacuity-verified by reverting GRDB in each manifest in turn.
-- **Build:** green · **Tests:** green — **351 tests, ZERO failures** on this branch (2026-09-02, full suite ×2) · **Simulator-verified:** n/a
+- **Last completed:** 4.2 — patch 8. A read that **throws** inside `nextRecordZoneChangeBatch`'s record provider now parks (returns `nil` for this batch, leaves the `.saveRecord` in engine state and 5.3b's ledger); only a genuinely absent row still runs `state.remove(pendingRecordZoneChanges:)`. Both reads are patched — the `SyncMetadata` row and the user-table row — because they sit two statements apart with the identical shape. Written as explicit `do`/`catch`: `withErrorReporting`'s optional overload flattens `R??` to `R?` itself, so upstream's `?? nil` never could have told the two apart. New `ReadFailureParkTests` (3 tests) injects each failure as a corrupt row and pins the absent-row boundary; each `catch` vacuity-verified by neutralizing it in place.
+- **Build:** green (debug + release) · **Tests:** green — **354 tests, ZERO failures** on this branch (2026-09-02, full suite ×2) · **Simulator-verified:** n/a
 - ⚠ **The fork now caps the minor of every shared Point-Free dependency in a consumer's graph.** Nothing fails to resolve (TCA's own floors sit far below these bounds — verified against a TCA-shaped scratch graph), but a pin bump can surface a **downgrade**: MonteSproutKit resolves swift-dependencies 1.16.0 today and this fork holds it at 1.14.x. Intended trade — loud at `/mango-update` time beats silent in the field. If a consumer genuinely needs a newer minor, retarget here; never widen the range app-side.
+- ⚠ **A permanently unreadable row now retries forever** (patch 8, same accepted shape as patch 1): it re-enters the batch builder and reports once per send round, and a consumer's "waiting to upload" count stays non-zero for it. That is the deliberate trade against the silent drop; a cap is the consumer's policy call, not the library's.
+- ⚠ **Never route either read in `nextRecordZoneChangeBatch`'s provider back through `withErrorReporting`** — its optional-returning overload flattens `R??` to `R?`, which compiles fine and silently restores the 1.0(12) outage shape.
 - ⚠ **The stamp is read off the RECORD in the batch, never off the metadata row** — `CKRecord.userModificationTime`'s setter takes a `max`, so an outgoing record can carry a higher stamp than its metadata, and what is on the wire is what the server holds.
 - ⚠ **The harness cannot reproduce the field's ordering.** A mocked record has no `modificationDate` (read-only system field — nothing can set one), so `refreshLastKnownServerRecord`'s newer-than-mine guard always answers yes and the mock's batch build levels a confirmed row's mirror optimistically; real CloudKit's does not. Patch 15's inversion test reaches the behind-mirror state through a fetch that lands while the save is in flight — do not "simplify" that fetch away.
 - ⚠ **Patch 15 narrows the NULL-mirror slim-ack shape in the field, it does not delete the rule.** Batch-built rows now leave their ack with a real mirror, so patch 9's rescan gains the "edit to a slim-acked row" shape; NULL is still "unknown, never a trigger", and 5.3b's ledger is still the only guard for a change that dies before its ack.
@@ -76,27 +78,15 @@
 - ⚠ **Patch 12 alone is inert for the case it was written for.** Real CloudKit never deletes a revoked participant's zone, so that hook only ever fires for a zone the owner deleted or purged outright. Never read it as the revocation signal.
 - ⚠ **Never make patch 13's default implementation forward to patch 12's hook.** One owner zone holds every hierarchy she shares out of it, so a zone-wide notice for the loss of one hierarchy makes a consumer destroy local data for records it still has. That is why the two hooks stay separate.
 
-**The two `AccountLifecycleTests` failures this file previously carried as "pre-existing and
-unexplained" are fixed and explained.** They were not upstream's and not the retarget's: 5.3b's
-always-on ledger made the host connection write to the metadatabase on every local change, and neither
-that connection nor the library's own was configured to wait for a lock. Both tests pass on a clean
-checkout of tag 1.10.0 and on a 5.3b revert — which is what identified the cause. Patch 10 is the fix;
-`MANGO-PATCHES.md` § 10 carries the mechanism, and rebase step 4b now separates "pre-existing" from
-"upstream's" so the next one cannot hide the same way.
-
 ---
 
 ## Next Concrete Action
 
-> **Do 4.2 — patch 8:** make a failed metadata read in `SyncEngine.nextRecordZoneChangeBatch` park
-> and retry the record instead of dropping it, so only a genuinely *absent* record leaves the upload
-> queue. Mechanism and the exact call site: `MANGO-PATCHES.md` § 8 (it is the same
-> `state.remove(pendingRecordZoneChanges:)` that made the 1.0(12) decode failure catastrophic —
-> patch 3 removed that era's trigger, patch 8 removes the amplifier). Red-first: a guard that goes
-> red when the park is neutralized in place. Then full suite ×2.
->
-> Then 4.3 — `tearDownSyncEngine` drops its triggers with `drop(ifExists: true)`, so a failed
-> `deleteLocalData()` clear is retryable in-process (`MANGO-PATCHES.md` § patch 5 known limitation).
+> **Do 4.3 — the last item before the milestone:** make `tearDownSyncEngine` drop its triggers with
+> `drop(ifExists: true)`, so a failed `deleteLocalData()` clear is retryable **in-process** instead of
+> needing a relaunch. Context and the exact limitation it closes: `MANGO-PATCHES.md` § patch 5 known
+> limitation (patch 5 made the failed clear throw; the second attempt then dies on an already-dropped
+> trigger). Red-first, neutralize-in-place vacuity check, then full suite ×2.
 >
 > ⚠ Patches 13, 14 and 15 are **inert for MonteSprout until it bumps its pin** (still `d84eeaa`, the
 > patch-14 tip) — that bump is `/mango-update`'s job in that repo, never a side effect of work here.
@@ -121,23 +111,13 @@ checkout of tag 1.10.0 and on a 5.3b revert — which is what identified the cau
 - **Upstream 1.10.0's stale `triggers()` snapshot** → chose **take only #522's two `TriggerTests` lines, not the whole commit; drop at the first tag containing #522** → DECISIONS.md § 2026-08-15 — 1.10.0 retarget
 - **How a retarget proves no patch was dropped, now that 5 of 9 guards have rotted** → chose **the byte-identity check on `Sources/SQLiteData/CloudKit/` is load-bearing; rewriting the rotted guards stays owed** → DECISIONS.md § 2026-08-15 — 1.10.0 retarget
 - **How far to bound the manifest, and whether to accept the fork capping a consumer's shared minors** → chose **one rule for every dependency, floors read off the base tag's `Package.resolved`; the cap is accepted because it fails loudly** → DECISIONS.md § 2026-09-02 — Phase 4.1
+- **How far patch 8's park reaches, and what "park" means here** → chose **both reads in the record provider; park = leave it queued (no `UnsyncedRecordID` row, no cap); explicit `do`/`catch` because `withErrorReporting` flattens the distinction** → DECISIONS.md § 2026-09-02 — Phase 4.2
 
 ---
 
 ## Needs You (irreversible / load-bearing — halts the run)
 
 - _none_
-
-Both prior bullets resolved 2026-08-16. **Base = `mango/patches-1.10` @ `e18249a`** — decided by
-action (MangoSync 0.7.2 pins it, every Mango app bumped in lockstep to the same revision + SSH URL).
-Not forced by patch 10 — that landed on **both** bases (`mango/patches-1.9` @ `869c362`,
-`mango/patches-1.10` @ `e18249a`); the choice was the owner's, and its consequence is that 1.0(17)
-also takes upstream's `@FetchOne` auto-observation and `StrictDecoding` trait. The
-**two `AccountLifecycleTests` failures were never pre-existing** — they were 5.3b's metadatabase lock
-contention, root-caused and fixed by patch 10 (consumer re-verified 2026-08-16: full suite ×2, zero
-failures).
-
----
 
 ## Assumptions & Risks
 

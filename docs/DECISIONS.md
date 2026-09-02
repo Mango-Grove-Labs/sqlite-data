@@ -302,3 +302,29 @@ of the participant story). Both red-first on their exact mechanisms; full suite 
    no bare `from:` plus floor-matches-`Package.resolved`, because no behavior test structurally can:
    the suite resolves via this repo's own `Package.resolved` and stays green on any version. What
    stays human is the judgment that a new base's pin is the version it is genuinely tested against.
+
+## 2026-09-02 — Phase 4.2 (patch 8): what "park" means for a failed read, and how far it reaches
+
+1. **Both reads in the record provider are patched, not just the metadata one the incident hit.**
+   `nextRecordZoneChangeBatch` reads the `SyncMetadata` row and then the user-table row, two
+   statements apart, through the identical `withErrorReporting(…) ?? nil` → drop shape. The 1.0(12)
+   decode class (a corrupt row) fails at the *second* read as readily as the first, so patching one
+   would have left the outage shape live behind a patched neighbour.
+2. **Park = leave it queued, not re-enqueue it.** Returning `nil` from the provider without calling
+   `state.remove(pendingRecordZoneChanges:)` leaves the `.saveRecord` in CKSyncEngine's state (and
+   5.3b's ledger row untouched), which is already the retry: `RecordZoneChangeBatch`'s initializer
+   removes nothing on its own — upstream's explicit `remove` was the only thing retiring it. No
+   `UnsyncedRecordID` park row is added; that machinery belongs to the fetch/apply side (patches 1
+   and 4), and adding it here would invent a second, redundant retry ledger.
+3. **Explicit `do`/`catch` instead of `withErrorReporting`.** Its optional-returning overload
+   flattens `R??` to `R?` itself, so "threw" and "no such row" are the same `nil` before the call
+   site ever sees them — upstream's `?? nil` was a no-op. The `catch` re-reports through
+   `reportIssue(error, .sqliteDataCloudKitFailure)`, so telemetry is unchanged; the only behavior
+   delta is that a `CancellationError`, which that helper swallows, now parks instead of dropping.
+   That is the same answer as any other failure: a cancelled read is not a deletion.
+4. **No cap on the retry, matching patch 1.** A permanently unreadable row re-enters the batch
+   builder and reports once per send round. A cap is a data-affecting policy the consumer chooses;
+   loud-and-retrying beats silent-and-gone, which is the whole point of the patch.
+5. **The absent-row branch keeps upstream's drop, and is pinned by its own test.** Without
+   `anAbsentMetadataRowStillLeavesTheQueue`, "park a read failure" could drift into "never drop
+   anything" and every deleted record would re-enter the builder forever.

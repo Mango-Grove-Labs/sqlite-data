@@ -351,3 +351,26 @@ today and would be held at 1.14.x, so its next pin bump will show that as a down
 deliberately: too tight fails loudly at build or `/mango-update` time, too loose fails silently in the
 field. The fix for a genuinely-needed newer minor is a retarget here, never a widened range app-side.
 Full suite ×2, **351/351**, zero failures.
+
+## 2026-09-02 — Phase 4.2: patch 8, the 1.0(12) amplifier is gone
+
+`nextRecordZoneChangeBatch`'s record provider no longer treats a failed read as a deletion. Both of
+its reads — the `SyncMetadata` row and the user-table row, two statements apart with the identical
+`withErrorReporting(…) ?? nil` → `state.remove(pendingRecordZoneChanges:)` shape — now park on a
+throw: return `nil` for this batch, leave the `.saveRecord` in the engine's state and 5.3b's ledger,
+retry on the next send. Only a genuinely absent row still leaves the queue. That conflation was the
+amplifier that turned the 0.33.1 decode bug into six days of silent, unrecoverable upload loss;
+patch 3 removed that era's trigger, this removes the outage shape for the next one.
+
+The gotcha worth remembering: `withErrorReporting`'s optional-returning overload **flattens `R??` to
+`R?` itself**, so upstream's `?? nil` was a no-op and no unwrapping at the call site could ever have
+separated "threw" from "no such row". Both sites are explicit `do`/`catch` now, re-reporting through
+`reportIssue(error, .sqliteDataCloudKitFailure)` — same telemetry, minus the flattening. A
+`CancellationError` (which the helper swallows) now parks too, which is the same right answer.
+
+New `ReadFailureParkTests` (3): a garbage `_lastKnownServerRecordAllFields` blob for the metadata
+read, an unparseable `dueDate` for the user-table read, plus the boundary test that an absent row
+still retires. Each `catch` vacuity-verified by re-adding the drop in place (5.3a style) — each
+branch takes down only its own test. 354 tests, zero failures, full suite ×2; release build checked.
+Rebase procedure updated with patch 8's cherry-pick entry and guard — and with patch 15's, which
+Phase 10.2 had left off the list.
