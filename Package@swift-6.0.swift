@@ -21,13 +21,25 @@ let package = Package(
     ),
   ],
   dependencies: [
-    .package(url: "https://github.com/apple/swift-collections", from: "1.0.0"),
-    .package(url: "https://github.com/groue/GRDB.swift", from: "7.6.0"),
-    .package(url: "https://github.com/pointfreeco/swift-concurrency-extras", from: "1.0.0"),
-    .package(url: "https://github.com/pointfreeco/swift-custom-dump", from: "1.3.3"),
-    .package(url: "https://github.com/pointfreeco/swift-dependencies", from: "1.9.0"),
-    .package(url: "https://github.com/pointfreeco/swift-sharing", from: "2.3.0"),
-    .package(url: "https://github.com/pointfreeco/swift-snapshot-testing", from: "1.18.4"),
+    // MANGO PATCH 3, second half (2026-09-02) — the whole-manifest bound audit, mirrored from
+    // `Package.swift`. Same versions (the base tag's `Package.resolved` pins), same rationale;
+    // this manifest declares a smaller dependency set (no perception, no tagged, no traits).
+    .package(url: "https://github.com/apple/swift-collections", .upToNextMinor(from: "1.6.0")),
+    .package(url: "https://github.com/groue/GRDB.swift", .upToNextMinor(from: "7.11.1")),
+    .package(
+      url: "https://github.com/pointfreeco/swift-concurrency-extras",
+      .upToNextMinor(from: "1.4.1")
+    ),
+    .package(url: "https://github.com/pointfreeco/swift-custom-dump", .upToNextMinor(from: "1.7.0")),
+    .package(
+      url: "https://github.com/pointfreeco/swift-dependencies",
+      .upToNextMinor(from: "1.14.1")
+    ),
+    .package(url: "https://github.com/pointfreeco/swift-sharing", .upToNextMinor(from: "2.9.1")),
+    .package(
+      url: "https://github.com/pointfreeco/swift-snapshot-testing",
+      .upToNextMinor(from: "1.19.4")
+    ),
     // MANGO PATCH 3, applied here too. This fallback manifest is inert on a 6.1+ toolchain (which is
     // what this fork and every consumer build with), but an unbounded `from:` is the same hole that
     // produced the 1.0(12) sync outage — full rationale in `Package.swift`. Keep the bound in lockstep
@@ -36,7 +48,10 @@ let package = Package(
       url: "https://github.com/pointfreeco/swift-structured-queries",
       .upToNextMinor(from: "0.36.0")
     ),
-    .package(url: "https://github.com/pointfreeco/xctest-dynamic-overlay", from: "1.5.0"),
+    .package(
+      url: "https://github.com/pointfreeco/xctest-dynamic-overlay",
+      .upToNextMinor(from: "1.11.0")
+    ),
   ],
   targets: [
     .target(
@@ -95,6 +110,6 @@ for target in package.targets {
 #if !os(Windows)
   // Add the documentation compiler plugin if possible
   package.dependencies.append(
-    .package(url: "https://github.com/apple/swift-docc-plugin", from: "1.0.0")
+    .package(url: "https://github.com/apple/swift-docc-plugin", .upToNextMinor(from: "1.5.0"))
   )
 #endif

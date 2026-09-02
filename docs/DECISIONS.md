@@ -270,3 +270,35 @@ of the participant story). Both red-first on their exact mechanisms; full suite 
    field.** Rows that went through the batch builder now leave their ack with a real mirror, so
    patch 9's start rescan gains the "edit to a slim-acked row" shape it was structurally blind to.
    That is a gain; 5.3b's ledger remains the guard for a change that dies before its ack.
+
+## 2026-09-02 — Phase 4.1 (patch 3, audit half): every dependency bounded, and what that costs
+
+1. **The rule is one rule, applied to the whole manifest: `.upToNextMinor(from: <the version the
+   base tag's own `Package.resolved` pins>)`.** Not "pre-1.0 only". The 1.0(12) outage was a pre-1.0
+   package, but the mechanism — the consumer's resolver, not this fork, picks what the app links
+   against, and this fork's suite can never see it — is identical for a post-1.0 package. `from:`
+   caps at the next *major*, which by semver is a promise, not a test result.
+2. **The floors are read off `Package.resolved`, never invented.** Every bound was set to the version
+   already resolved, so the graph is byte-identical before and after: this narrows what a consumer
+   *may* resolve and changes nothing about what this fork builds and tests against. That property is
+   what makes the change safe to land without a behavior test.
+3. **swift-tagged is the one exception, and deliberately so.** It is trait-gated (`Tagged`, off by
+   default) and therefore appears in no resolution of this package — there is no tested-against
+   version to read. Bounded at its own declared floor's minor (pre-1.0, so the conservative shape
+   anyway). `ManifestBoundsTests` skips the floor-match assertion for exactly this case.
+4. **swift-docc-plugin is bounded too, though it cannot cause a field failure.** It is docs-only
+   build tooling, but it is declared here and so propagates into a consumer's resolution graph like
+   any other range. Uniformity beats a carve-out nobody will remember the reason for.
+5. **Accepted consequence: this fork now caps the minor of every shared Point-Free dependency in a
+   consumer's graph.** Verified against a TCA-shaped graph (TCA `from: "1.0.0"` + swift-dependencies
+   + this fork by path): it resolves — TCA's own floors sit far below these bounds, so no consumer
+   hits a hard resolution failure — but the resolver can no longer climb past the bound, e.g.
+   swift-dependencies is held at 1.14.x while MonteSproutKit resolves 1.16.0 today. Its next pin
+   bump will therefore show a downgrade in `Package.resolved`. Chosen anyway: too tight fails
+   **loudly** at build time or visibly at `/mango-update` time; too loose fails silently in the
+   field, which is the failure this patch exists for. Reversible in one line if it ever bites; the
+   right fix is a retarget here, never a widened range in the app.
+6. **The eye-check became a test.** `ManifestBoundsTests` parses both manifests as text and asserts
+   no bare `from:` plus floor-matches-`Package.resolved`, because no behavior test structurally can:
+   the suite resolves via this repo's own `Package.resolved` and stays green on any version. What
+   stays human is the judgment that a new base's pin is the version it is genuinely tested against.

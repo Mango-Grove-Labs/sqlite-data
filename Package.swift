@@ -55,14 +55,39 @@ let package = Package(
     ),
   ],
   dependencies: [
-    .package(url: "https://github.com/apple/swift-collections", from: "1.0.0"),
-    .package(url: "https://github.com/groue/GRDB.swift", from: "7.6.0"),
-    .package(url: "https://github.com/pointfreeco/swift-concurrency-extras", from: "1.4.0"),
-    .package(url: "https://github.com/pointfreeco/swift-custom-dump", from: "1.3.3"),
-    .package(url: "https://github.com/pointfreeco/swift-dependencies", from: "1.9.0"),
-    .package(url: "https://github.com/pointfreeco/swift-perception", from: "2.0.0"),
-    .package(url: "https://github.com/pointfreeco/swift-sharing", from: "2.3.0"),
-    .package(url: "https://github.com/pointfreeco/swift-snapshot-testing", from: "1.18.4"),
+    // MANGO PATCH 3, second half (2026-09-02) — **every** dependency here is bounded to the minor
+    // this branch's base tag (upstream 1.10.0) is actually written and tested against, i.e. the
+    // version that tag's own `Package.resolved` pins. Upstream declares each one with a bare
+    // `from:`, which for a pre-1.0 package means "any breaking minor" and for a post-1.0 one still
+    // means "any untested minor" — either way the resolver, not this fork, picks what a consumer
+    // links against. That is the exact hole that produced the 1.0(12) sync outage (see the
+    // swift-structured-queries note below for the full forensics); it is a CLASS of bug, not a
+    // one-off, and GRDB — declared `from: "7.6.0"`, resolving 7.11.1, sitting directly under the
+    // storage layer — was the widest gap in the manifest.
+    //
+    // Consequence, deliberately accepted: a new minor of any of these becomes a DELIBERATE, tested
+    // fork upgrade (retune here, run the suite twice, bump consumer pins) instead of something a
+    // consumer's resolver decides silently. The failure mode of a bound that is too tight is a LOUD
+    // resolution error at build time; the failure mode of no bound is silent data loss in the field.
+    // Keep every bound in lockstep with the base tag's `Package.resolved` at each rebase (rebase
+    // procedure step 5), and keep `Package@swift-6.0.swift` in lockstep with this file.
+    .package(url: "https://github.com/apple/swift-collections", .upToNextMinor(from: "1.6.0")),
+    .package(url: "https://github.com/groue/GRDB.swift", .upToNextMinor(from: "7.11.1")),
+    .package(
+      url: "https://github.com/pointfreeco/swift-concurrency-extras",
+      .upToNextMinor(from: "1.4.1")
+    ),
+    .package(url: "https://github.com/pointfreeco/swift-custom-dump", .upToNextMinor(from: "1.7.0")),
+    .package(
+      url: "https://github.com/pointfreeco/swift-dependencies",
+      .upToNextMinor(from: "1.14.1")
+    ),
+    .package(url: "https://github.com/pointfreeco/swift-perception", .upToNextMinor(from: "2.0.11")),
+    .package(url: "https://github.com/pointfreeco/swift-sharing", .upToNextMinor(from: "2.9.1")),
+    .package(
+      url: "https://github.com/pointfreeco/swift-snapshot-testing",
+      .upToNextMinor(from: "1.19.4")
+    ),
     // MANGO PATCH 3 — bound this range. Upstream declares an open lower bound (`from:`), so a consumer's
     // SPM graph silently resolves whatever is newest. The bound pins the minor this branch's base tag is
     // actually written and tested against: **1.10.0 pins 0.36.0** in its own `Package.resolved`.
@@ -102,8 +127,14 @@ let package = Package(
         .trait(name: "Tagged", condition: .when(traits: ["Tagged"])),
       ]
     ),
-    .package(url: "https://github.com/pointfreeco/swift-tagged", from: "0.10.0"),
-    .package(url: "https://github.com/pointfreeco/xctest-dynamic-overlay", from: "1.5.0"),
+    // swift-tagged is trait-gated (`Tagged`, off by default), so it appears in NO `Package.resolved`
+    // here — there is no tested-against version to read off the base tag. Bounded at its own declared
+    // floor's minor: pre-1.0, so 0.11+ is breaking by convention and must be a deliberate upgrade.
+    .package(url: "https://github.com/pointfreeco/swift-tagged", .upToNextMinor(from: "0.10.0")),
+    .package(
+      url: "https://github.com/pointfreeco/xctest-dynamic-overlay",
+      .upToNextMinor(from: "1.11.0")
+    ),
   ],
   targets: [
     .target(
@@ -177,7 +208,10 @@ for target in package.targets {
 
 #if !os(Windows)
   // Add the documentation compiler plugin if possible
+  // MANGO PATCH 3 (audit) — bounded like every other dependency; 1.10.0 resolves 1.5.0. Docs-only
+  // build tooling, so it cannot cause a field failure, but it is declared here and therefore
+  // propagates into a consumer's resolution graph like any other range.
   package.dependencies.append(
-    .package(url: "https://github.com/apple/swift-docc-plugin", from: "1.0.0")
+    .package(url: "https://github.com/apple/swift-docc-plugin", .upToNextMinor(from: "1.5.0"))
   )
 #endif

@@ -94,12 +94,46 @@ resolver decides silently.
 ⚠️ **This is a class of bug, not a one-off.** Any unbounded `from:` in this manifest can do the
 same thing to a consumer. Treat a widened range as a library change requiring the full suite.
 
-**Owed: audit the remaining unbounded ranges.** Every other dependency here is still declared
-`from:` with no ceiling, and this repo's own `Package.resolved` shows how far they drift —
-**GRDB is declared `from: "7.6.0"` and resolves to 7.11.1**, the largest gap in the manifest and
-the one sitting closest to the storage layer. Nothing has gone wrong there; the point is that
-nothing would tell us if it did. (Tracked as item 8 of the MonteSprout incident, but the work
-happens in this repo.)
+**The audit is done (2026-09-02) — every dependency in both manifests is now bounded.** It had been
+owed since the 1.6.6 patch: every *other* dependency was still declared `from:` with no ceiling, and
+this repo's own `Package.resolved` showed how far they drift — **GRDB was declared `from: "7.6.0"`
+and resolved to 7.11.1**, the largest gap in the manifest and the one sitting closest to the storage
+layer. Nothing had gone wrong there; the point is that nothing would have told us if it did.
+(Tracked as item 8 of the MonteSprout incident; the work happened in this repo.)
+
+Each range is now `.upToNextMinor(from: <the version the base tag's own Package.resolved pins>)`:
+
+| dependency | was | now |
+| --- | --- | --- |
+| GRDB.swift | `from: "7.6.0"` | `.upToNextMinor(from: "7.11.1")` |
+| swift-collections | `from: "1.0.0"` | `.upToNextMinor(from: "1.6.0")` |
+| swift-concurrency-extras | `from: "1.4.0"` (6.0 manifest: `1.0.0`) | `.upToNextMinor(from: "1.4.1")` |
+| swift-custom-dump | `from: "1.3.3"` | `.upToNextMinor(from: "1.7.0")` |
+| swift-dependencies | `from: "1.9.0"` | `.upToNextMinor(from: "1.14.1")` |
+| swift-perception | `from: "2.0.0"` | `.upToNextMinor(from: "2.0.11")` |
+| swift-sharing | `from: "2.3.0"` | `.upToNextMinor(from: "2.9.1")` |
+| swift-snapshot-testing | `from: "1.18.4"` | `.upToNextMinor(from: "1.19.4")` |
+| xctest-dynamic-overlay | `from: "1.5.0"` | `.upToNextMinor(from: "1.11.0")` |
+| swift-docc-plugin | `from: "1.0.0"` | `.upToNextMinor(from: "1.5.0")` |
+| swift-tagged | `from: "0.10.0"` | `.upToNextMinor(from: "0.10.0")` |
+
+The resolved graph is **byte-identical** before and after (`Package.resolved` did not move): every
+bound was set to the version already resolved, so this is a narrowing of what a consumer's resolver
+*may* pick, never a change to what this fork builds against. swift-tagged is the one exception to
+the "read it off `Package.resolved`" rule — it is trait-gated (`Tagged`, off by default) and so
+appears in no resolution of this package; it is bounded at its own declared floor's minor, which
+pre-1.0 is the same conservative shape.
+
+⚠️ **Consequence, deliberately accepted: this fork now caps the minor of every shared Point-Free
+dependency in a consumer's graph.** Verified against a TCA-shaped graph (TCA `from: "1.0.0"` +
+swift-dependencies + this fork by path): it still **resolves** — TCA declares its own floors far
+below these bounds, so no consumer hits a hard resolution failure — but the resolver can no longer
+climb past the bound (e.g. swift-dependencies is held at 1.14.x). MonteSproutKit resolves 1.16.0
+today, so its next pin bump will show that as a downgrade in its `Package.resolved`. That is the
+intended trade: the failure mode of a bound that is too tight is a **loud** resolution error or a
+visible pin move at `/mango-update` time; the failure mode of no bound is silent data loss in the
+field. If a consumer ever *needs* a newer minor, the fix is a retarget here (retune, suite twice,
+bump pins) — never a widened range in the app.
 
 **`Package@swift-6.0.swift` now carries the bound too** (2026-08-15). Patch 3 had only ever touched
 `Package.swift`, leaving the 6.0 fallback manifest declaring `swift-structured-queries` as a bare
@@ -790,6 +824,14 @@ after a round trip and diverge exactly while an edit is unsent. It must be read 
   query.** Note this suite cannot catch the defect on its own — it runs against the pinned
   resolution, which is precisely why the outage reached the field: the tests and the consuming app
   were in different dependency worlds. To re-check, point `Package.resolved` at 0.33.1 and re-run.
+- **`ManifestBoundsTests`** — the guard for the bound itself, added with the 2026-09-02 audit. Parses
+  both manifests as **text** (behavior tests structurally cannot see a range) and asserts (a) no
+  dependency is declared with a bare `from:`, and (b) every bound's floor is the minor
+  `Package.resolved` pins, so a retarget that forgets to retune goes red. Vacuity-checked both ways:
+  reverting GRDB to `from: "7.6.0"` in `Package.swift` reddens the live-manifest test *and* the
+  floor-match case for `Package.swift`; doing the same in `Package@swift-6.0.swift` reddens the 6.0
+  test and only that manifest's floor-match case. Trait-gated dependencies (swift-tagged) are absent
+  from `Package.resolved` and are skipped by (b) by design — (a) still covers them.
 
 ### Test commits — patches 1–2 (no library behavior change)
 
@@ -1001,15 +1043,19 @@ declares it unbounded (`from: "0.36.0"`), so patch 3 is still ours to carry. Not
    baseline. That distinction is exactly what the 1.10.0 retarget got wrong (the two
    `AccountLifecycleTests` failures were 5.3b's, one commit old — now fixed by patch 10), and it is
    what proved `TriggerTests.triggers()` genuinely *was* upstream's stale snapshot.
-5. **Manifest check (required):** confirm **both** `Package.swift` **and** `Package@swift-6.0.swift`
-   still carry an `.upToNextMinor`
-   bound for `swift-structured-queries` matching the base tag's own `Package.resolved` pin
-   (currently `.upToNextMinor(from: "0.36.0")` on `mango/patches-1.10`) — the new upstream tag's
-   tested minor, not the previous branch's literal. **No test can catch a
-   dropped patch 3**: the suite resolves via this repo's own `Package.resolved` and stays green on
-   any version, which is exactly how the original outage reached the field. Check it by eye. (The 6.0
-   fallback manifest is inert on a 6.1+ toolchain, but it is the same hole and drifts silently — it
-   spent the whole 1.9 line unbounded before anyone looked.)
+5. **Manifest check (required):** retune **every** bound in **both** `Package.swift` **and**
+   `Package@swift-6.0.swift` to the new base tag's own `Package.resolved` pins — the new upstream
+   tag's tested minors, not the previous branch's literals. Since 2026-09-02 that is the whole
+   dependency list, not just `swift-structured-queries` (§ 3's table). **`ManifestBoundsTests` is
+   the automated half of this check**: it fails if any dependency is declared with a bare `from:`,
+   and it fails if a bound's floor no longer matches the `Package.resolved` pin — so a rebase that
+   forgets to retune goes red instead of shipping. It reads the manifests as text, which is the only
+   thing that can catch this: **no behavior test can**, because the suite resolves via this repo's
+   own `Package.resolved` and stays green on any version, which is exactly how the original outage
+   reached the field. What still needs the eye is the *judgment* — that the new floor is the version
+   the new base is genuinely tested against. (The 6.0 fallback manifest is inert on a 6.1+
+   toolchain, but it is the same hole and drifts silently — it spent the whole 1.9 line unbounded
+   before anyone looked; `ManifestBoundsTests` now watches it too.)
 6. Full `swift test` green (known-intermittent issues aside), twice. "Green" means no unexplained
    failure — see 4b before writing one off.
 7. Push the branch; update consumers' `Package.swift` `revision:` pins in lockstep.

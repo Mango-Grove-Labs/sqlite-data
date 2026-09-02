@@ -325,3 +325,29 @@ existing F2/F10 tests, which is the fork telling you that shortcut is the bug pa
 for. New migration registered last, no backfill. Snapshots re-recorded in 12 files (the column shows
 in every `SyncMetadata` dump, always `nil` — the settled state). Full suite **348/348**.
 ⚠ Inert for consumers until a pin bump: MonteSprout still ships patch 14's residual until it adopts.
+
+## 2026-09-02 — Phase 4.1: the rest of the manifest gets a ceiling
+
+The half of patch 3 owed since the 1.6.6 base. Every dependency in both `Package.swift` and
+`Package@swift-6.0.swift` is now `.upToNextMinor(from:)` at the version the base tag's own
+`Package.resolved` pins — 11 ranges, GRDB (`from: "7.6.0"`, resolving 7.11.1) the widest gap and the
+one sitting closest to the storage layer. Floors were read off `Package.resolved`, never invented, so
+the resolved graph is byte-identical before and after: this narrows only what a *consumer's* resolver
+may pick, which is why a manifest-only change lands safely without a behavior test. swift-tagged is
+the lone exception to the read-it-off-resolved rule — trait-gated, so it appears in no resolution and
+is bounded at its own declared floor's minor instead.
+
+The eye-check in rebase step 5 became a guard. `ManifestBoundsTests` parses both manifests as **text**
+— no behavior test can see a range, since the suite resolves via this repo's own `Package.resolved`
+and stays green on any version, which is exactly how the 1.0(12) outage reached the field — and fails
+on a bare `from:` or on a floor that has drifted from `Package.resolved`. Vacuity-checked by reverting
+GRDB in each manifest in turn: each reddens its own manifest's test plus that manifest's floor-match
+case, and nothing else.
+
+Worth carrying forward: **the fork now caps the minor of every shared Point-Free dependency in a
+consumer's graph.** A TCA-shaped scratch graph still resolves (TCA's own floors sit far below), but
+the resolver can no longer climb past the bound — MonteSproutKit resolves swift-dependencies 1.16.0
+today and would be held at 1.14.x, so its next pin bump will show that as a downgrade. Accepted
+deliberately: too tight fails loudly at build or `/mango-update` time, too loose fails silently in the
+field. The fix for a genuinely-needed newer minor is a retarget here, never a widened range app-side.
+Full suite ×2, **351/351**, zero failures.
