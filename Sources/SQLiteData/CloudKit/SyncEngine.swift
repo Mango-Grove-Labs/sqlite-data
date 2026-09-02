@@ -844,6 +844,20 @@
       }
     }
 
+    // MANGO PATCH 16 — teardown must be idempotent, so a failed clear is retryable IN-PROCESS.
+    //
+    // Upstream drops with a bare `DROP TRIGGER`, which throws `no such trigger: …` whenever the
+    // triggers are already gone. That is not hypothetical since patch 5: a failed
+    // `deleteLocalData()` rolls its write back, and the rollback undoes the
+    // `setUpSyncEngine(writableDB:)` that re-creates the triggers, while THIS teardown's drop
+    // (a prior, already-committed write) stands. The caller patch 5 exists to inform then fixes
+    // the cause and calls again — and upstream's second call died right here, in teardown, before
+    // reaching the clearing write, masking the original cause. Recovery was an app relaunch.
+    //
+    // `ifExists: true` makes the drop a no-op on an absent trigger, so the retry reaches the
+    // clear and `setUpSyncEngine(writableDB:)` re-creates the triggers on the way out. Nothing
+    // else changes: a present trigger is dropped exactly as before.
+    // Repro/guard: `DeleteLocalDataFailureTests.failedClearIsRetryableInProcess`.
     package func tearDownSyncEngine() throws {
       try userDatabase.write { db in
         for table in tables.reversed() {
@@ -851,7 +865,7 @@
             .dropTriggers(defaultZone: defaultZone, privateTables: privateTables, db: db)
         }
         for trigger in SyncMetadata.callbackTriggers(for: self).reversed() {
-          try trigger.drop().execute(db)
+          try trigger.drop(ifExists: true).execute(db)
         }
       }
       try metadatabase.erase()
@@ -871,9 +885,10 @@
     /// > Warning: If the clear fails, this method **throws** and the sync engine is deliberately
     /// > left **stopped** (MANGO PATCH 5). The failed write is rolled back — so every row survives
     /// > and the sync triggers are gone, which is why a running engine would silently track
-    /// > nothing — while the metadatabase erase that precedes it stands. A second call cannot
-    /// > recover: it throws `no such trigger` from the teardown before reaching the clear.
-    /// > Recovery is a fresh sync engine (app relaunch), not a retry.
+    /// > nothing — while the metadatabase erase that precedes it stands. Once the cause of the
+    /// > failure is fixed, calling this method again recovers in-process: the teardown's trigger
+    /// > drops are idempotent (MANGO PATCH 16), so the retry reaches the clear and re-installs
+    /// > the triggers. No relaunch required.
     ///
     /// - Throws: Any error raised while clearing the synchronized tables or re-installing the
     ///   sync triggers. Upstream reported these as issues and returned normally; this fork
@@ -1097,7 +1112,10 @@
         privateTables: privateTables
       )
       .reversed() {
-        try trigger.drop().execute(db)
+        // MANGO PATCH 16 — see `tearDownSyncEngine()`: the per-table half of the same idempotent
+        // drop. This is the loop the retry actually died in (`no such trigger:
+        // sqlitedata_icloud_after_primary_key_change_on_…`).
+        try trigger.drop(ifExists: true).execute(db)
       }
     }
   }

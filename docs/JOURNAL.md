@@ -374,3 +374,24 @@ still retires. Each `catch` vacuity-verified by re-adding the drop in place (5.3
 branch takes down only its own test. 354 tests, zero failures, full suite ×2; release build checked.
 Rebase procedure updated with patch 8's cherry-pick entry and guard — and with patch 15's, which
 Phase 10.2 had left off the list.
+
+## 2026-09-02 — Phase 4.3: patch 16, teardown's trigger drops are idempotent
+
+`tearDownSyncEngine()` now drops both families of sync trigger with `drop(ifExists: true)` — the
+per-table `dropTriggers` loop and `SyncMetadata`'s callback triggers. That closes patch 5's
+documented known limitation: a failed `deleteLocalData()` rolls its write back, the rollback undoes
+the `setUpSyncEngine(writableDB:)` that re-creates the triggers, and the already-committed teardown
+drop stands — so the retry patch 5 exists to enable died in *teardown* on `no such trigger:
+sqlitedata_icloud_after_primary_key_change_on_…`, masking the original cause and making an app
+relaunch the only recovery. Now the second call reaches the clear and re-installs the triggers.
+
+Red-first: the new `DeleteLocalDataFailureTests.failedClearIsRetryableInProcess` (sabotage → throw →
+un-sabotage → second call clears for real) failed on exactly that `no such trigger` before the fix.
+Vacuity-checked 5.3a style by neutralizing each `ifExists: true` back to a bare `drop()` in place —
+each half reddens the guard on its own, so both are load-bearing. Accepted trade, written down: the
+drop no longer reports a trigger that should have been there; nothing was built on that throw.
+
+355 tests, zero failures, full suite ×2; release build green. MANGO-PATCHES gains § 16, the
+patch-5 limitation is rewritten as closed, and the rebase procedure gains patch 16's cherry-pick
+entry (conflict trap: taking upstream restores the bare `drop()` on both sites, compiles fine,
+silently re-breaks the retry) and its neutralize-in-place guard.

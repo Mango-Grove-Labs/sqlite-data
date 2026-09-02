@@ -328,3 +328,20 @@ of the participant story). Both red-first on their exact mechanisms; full suite 
 5. **The absent-row branch keeps upstream's drop, and is pinned by its own test.** Without
    `anAbsentMetadataRowStillLeavesTheQueue`, "park a read failure" could drift into "never drop
    anything" and every deleted record would re-enter the builder forever.
+
+## 2026-09-02 — Phase 4.3 (patch 16): teardown's drops become idempotent
+
+1. **`drop(ifExists: true)` at both sites, not just the one the retry died on.** The per-table
+   `dropTriggers` loop is where the reproduction actually threw, but `tearDownSyncEngine()`'s
+   `SyncMetadata.callbackTriggers` loop is the same bare `DROP TRIGGER` two lines later — and it
+   reddens the guard on its own when neutralized, so both are load-bearing. Patching one would have
+   left a second `no such trigger` waiting behind the first.
+2. **Accepted: the drop no longer reports an absent trigger.** That throw named "this trigger isn't
+   here", never a roster mismatch, and no call site was built on it — every one of them treats
+   teardown's success as the precondition for what follows. Losing it is the whole fix.
+3. **No new state, no new retry machinery.** The in-process retry is just "call `deleteLocalData()`
+   again"; `setUpSyncEngine(writableDB:)` at the end of the clearing write re-installs the triggers,
+   so nothing needs to remember that a previous attempt dropped them. Two lines, no bookkeeping.
+4. **The patch closes patch 5's documented limitation rather than widening patch 5.** It ships as
+   its own numbered patch (16) with its own cherry-pick entry and guard, so a future rebase cannot
+   lose it inside patch 5's conflict resolution — patch 5 lives in the region that already rots.

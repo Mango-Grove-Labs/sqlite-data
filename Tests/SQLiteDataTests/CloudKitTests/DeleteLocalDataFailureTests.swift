@@ -108,6 +108,62 @@
           .saveZone(SyncEngine.defaultTestZone)
         ])
       }
+
+      /// MANGO PATCH 16 — the retry patch 5 made reachable.
+      ///
+      /// Patch 5 turned the swallowed clear failure into a throw, which puts a caller in a
+      /// position to fix the cause and call again. Upstream's `tearDownSyncEngine()` dropped its
+      /// triggers with a bare `DROP TRIGGER`, so that second call died in *teardown* with
+      /// `no such trigger: …` — before it ever reached the clearing write — masking the original
+      /// cause and making an app relaunch the only recovery. With `drop(ifExists: true)` the
+      /// second call clears for real.
+      ///
+      /// Reverting the `ifExists: true` sends this red on the `no such trigger` throw.
+      @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
+      @Test func failedClearIsRetryableInProcess() async throws {
+        try await userDatabase.userWrite { db in
+          try db.seed {
+            RemindersList(id: 1, title: "Personal")
+            Reminder(id: 1, title: "Get milk", remindersListID: 1)
+          }
+        }
+        try await syncEngine.processPendingRecordZoneChanges(scope: .private)
+
+        // Same sabotage as `failedClearThrows`: the clearing write fails and rolls back, leaving
+        // the sync triggers dropped by the teardown that preceded it.
+        try await userDatabase.write { db in
+          try #sql("ALTER TABLE \"remindersLists\" RENAME TO \"remindersLists_broken\"")
+            .execute(db)
+        }
+        var firstError: (any Error)?
+        do {
+          try await syncEngine.deleteLocalData()
+        } catch {
+          firstError = error
+        }
+        #expect(firstError != nil)
+
+        // The caller fixes the cause and retries — the whole point of patch 5's throw.
+        try await userDatabase.write { db in
+          try #sql("ALTER TABLE \"remindersLists_broken\" RENAME TO \"remindersLists\"")
+            .execute(db)
+        }
+        try await syncEngine.deleteLocalData()
+
+        // The retry actually cleared, in-process, with no relaunch.
+        try await userDatabase.read { db in
+          try #expect(RemindersList.count().fetchOne(db) == 0)
+          try #expect(Reminder.count().fetchOne(db) == 0)
+        }
+        try await syncEngine.metadatabase.read { db in
+          try #expect(SyncMetadata.count().fetchOne(db) == 0)
+        }
+        #expect(syncEngine.isRunning == true)
+
+        syncEngine.private.state.assertPendingDatabaseChanges([
+          .saveZone(SyncEngine.defaultTestZone)
+        ])
+      }
     }
   }
 #endif

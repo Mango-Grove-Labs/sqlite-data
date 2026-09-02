@@ -233,19 +233,18 @@ partial clear** (table A's `DELETE` fails and is swallowed, B and C are emptied,
 makes that impossible — any table's failure aborts the write and rolls back every delete. Failure
 now always leaves the database *whole*, which is the better position to retry or report from.
 
-Known limitation (an upstream defect the patch doesn't cause but newly makes reachable):
+Known limitation — **closed by patch 16** (2026-09-02):
 
-- **A failed clear cannot be retried in-process.** `tearDownSyncEngine()` drops its triggers with a
-  bare `drop()` (no `IF EXISTS`, `SyncEngine.swift:994`), and nothing re-creates them until a fresh
-  `SyncEngine.init` — `start()` doesn't, and the only other `setUpSyncEngine` call is the one inside
-  the write that just rolled back. A second `deleteLocalData()` therefore throws
+- **A failed clear could not be retried in-process.** `tearDownSyncEngine()` dropped its triggers
+  with a bare `drop()` (no `IF EXISTS`), and nothing re-creates them until a fresh `SyncEngine.init`
+  — `start()` doesn't, and the only other `setUpSyncEngine` call is the one inside the write that
+  just rolled back. A second `deleteLocalData()` therefore threw
   `no such trigger: sqlitedata_icloud_after_primary_key_change_on_…` out of *teardown*, before it
-  ever reaches the clearing write, masking the original cause. Recovery is an app relaunch, not a
+  ever reached the clearing write, masking the original cause; recovery was an app relaunch, not a
   retry. Under upstream this was unreachable in practice because the first failure was silent and
   nobody retried; patch 5 is what puts a caller in a position to try again. Verified by
-  reproduction 2026-07-25 (sabotage → throw → un-sabotage → second call throws `no such trigger`,
-  rows still present). A one-line `drop(ifExists: true)` would fix it — deliberately left as future
-  work rather than widening this patch.
+  reproduction 2026-07-25, and now pinned as a **green** guard by
+  `DeleteLocalDataFailureTests.failedClearIsRetryableInProcess`. See § 16.
 
 - **`DeleteLocalDataFailureTests`** — pins the patched contract: `failedClearThrows` (sabotaged
   table → the call throws; rows survive the rollback; metadatabase already erased; engine left
@@ -818,6 +817,36 @@ they inject an ack with no batch build; their comments say so.
   dump, so re-record the inline snapshots after a rebase (12 test files carry them today), and keep
   this migration registered **last**.
 
+### 16. Teardown's trigger drops are idempotent, so a failed clear is retryable in-process
+
+*Closes patch 5's known limitation — no consumer incident; the defect is the one patch 5 made
+reachable, and this repo's own reproduction (2026-07-25) is the evidence.*
+
+Upstream's `tearDownSyncEngine()` drops both families of sync trigger with a bare
+`DROP TRIGGER` — the per-table ones (`dropTriggers`) and `SyncMetadata`'s callback triggers.
+`DROP TRIGGER` on an absent trigger is an error, so teardown is **not idempotent**, and since patch
+5 that is reachable: a failed `deleteLocalData()` rolls its write back, the rollback undoes the
+`setUpSyncEngine(writableDB:)` that re-creates the triggers, and this teardown's drop — a prior,
+already-committed write — stands. The caller patch 5 exists to inform then fixes the cause and calls
+again, and upstream's second call died *in teardown* on
+`no such trigger: sqlitedata_icloud_after_primary_key_change_on_…`, before it ever reached the
+clearing write. The original cause was masked and the only recovery was an app relaunch.
+
+The patch: `drop(ifExists: true)` at both sites (`SyncEngine.tearDownSyncEngine()`'s callback-trigger
+loop and the per-table `dropTriggers`). A present trigger is dropped exactly as before; an absent one
+is a no-op, so the retry reaches the clear and `setUpSyncEngine(writableDB:)` re-installs the
+triggers on the way out. Two lines, no behavior change on any path where the triggers exist.
+
+Accepted trade, stated: the drop no longer *reports* a trigger that should have existed but didn't.
+Nothing was ever built on that throw — it names an absent trigger, not a roster mismatch, and every
+call site treats teardown's success as the precondition for what follows.
+
+- **Guard: `DeleteLocalDataFailureTests.failedClearIsRetryableInProcess`** — sabotage a rostered
+  table, first `deleteLocalData()` throws (patch 5), un-sabotage, second call **clears for real**
+  (rows gone, metadatabase empty, engine restarted). Neutralize either `ifExists: true` in place and
+  it goes red on `no such trigger`; both halves verified independently 2026-09-02, and each is
+  load-bearing on its own.
+
 ### Characterization — what a "waiting to upload" count derived from `lastKnownServerRecord` cannot see
 
 *MonteSprout Phase 41.2a — no library change; a pinned fact consumers build on.*
@@ -990,6 +1019,9 @@ declares it unbounded (`from: "0.36.0"`), so patch 3 is still ours to carry. Not
    **patch 8 (the two `do`/`catch` read-failure parks inside `nextRecordZoneChangeBatch`'s record
    provider; a conflict resolved by taking upstream restores `withErrorReporting(…) ?? nil`, which
    compiles fine and silently reinstates the drop — check both reads)**,
+   **patch 16 (the two `drop(ifExists: true)` calls — `tearDownSyncEngine()`'s callback-trigger loop
+   and the per-table `dropTriggers`; a conflict resolved by taking upstream restores the bare
+   `drop()` on both, which compiles fine and silently re-breaks the in-process retry — check both)**,
    the test
    commits (take them from the tip of the previous `mango/patches-*` branch). Resolve conflicts by **idiom, not line
    number** — the `SyncEngine` error-handling region drifts. Patch 3 conflicts every time, because the
@@ -1059,6 +1091,12 @@ declares it unbounded (`from: "0.36.0"`), so patch 3 is still ours to carry. Not
      `aFailedRecordReadParksTheRecord` for the user-row `catch` — each branch takes down only its own
      test, and `anAbsentMetadataRowStillLeavesTheQueue` stays green either way (it pins the boundary);
      restore → green.
+   - Neutralize patch 16 in place (put either `drop(ifExists: true)` back to a bare `drop()` —
+     `tearDownSyncEngine()`'s callback-trigger loop or the per-table `dropTriggers`) → `swift test
+     --filter DeleteLocalDataFailureTests` must go **red** on `failedClearIsRetryableInProcess`
+     (`no such trigger: …` out of the retry's teardown), while `failedClearThrows` and
+     `directCallClearsAndRestarts` stay green; restore → green. Both halves redden it independently
+     (verified 2026-09-02).
    - Neutralize patch 12 in place (delete the notify loop at the top of
      `handleFetchedDatabaseChanges`) → `swift test --filter ZonePurgeDelegateTests` must go **red** on
      `aSharedZonePurgeNotifiesTheDelegateBeforeDeletingLocalRows` (zero notices), while
@@ -1067,7 +1105,7 @@ declares it unbounded (`from: "0.36.0"`), so patch 3 is still ours to carry. Not
 
    A rebase that skips these can silently drop a guard. **Before running any of them, read
    "Guard executability" above** — of the pre-Phase-8 guards only five still revert cleanly
-   (patch 10's is the fifth); patches 8, 11 and 12 are **neutralize-in-place by definition** (above)
+   (patch 10's is the fifth); patches 8, 11, 12 and 16 are **neutralize-in-place by definition** (above)
    and don't rot the same way. The byte-identity check described there is the check that actually
    rules out a dropped patch.
 
