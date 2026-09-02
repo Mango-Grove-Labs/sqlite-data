@@ -2,7 +2,7 @@
 
 - **Project:** sqlite-data (Mango fork of pointfreeco/sqlite-data)
 - **Target milestone:** Open patch work done — **reached** (Phase 4 closed by patch 16); stop for review
-- **Status:** `milestone-reached` — every box on the roadmap is checked. Patches 1–16 sit on `mango/patches-1.10`, the adopted consumer base; the next work here is consumer-driven (a new incident, or a retarget onto the next upstream tag).
+- **Status:** `milestone-reached` — every box on the roadmap is checked. Patches 1–16 now sit on **`mango/patches-1.12`** (upstream 1.12.0; the 2026-09-02 `/mango-update` retarget). Consumers still pin `mango/patches-1.10` revisions until their own coordinated `/mango-update` (sqlite-data pin + TCA ≥ 1.26 / IssueReporting 2.x together — see DECISIONS § 1.12.0 retarget).
 - **Updated:** 2026-09-02
 
 ---
@@ -66,8 +66,8 @@
 - **Current phase / sub-phase:** none in flight — Phase 4 complete, the "Open patch work done" milestone reached
 - **State:** milestone-reached
 - **Last completed:** 4.3 — patch 16. Both trigger drops in teardown are now `drop(ifExists: true)` (the per-table `dropTriggers` loop and `SyncMetadata`'s callback triggers), so a `deleteLocalData()` that failed and rolled back can be **retried in-process** once the cause is fixed instead of dying in teardown on `no such trigger`. Closes patch 5's known limitation. Red-first guard `DeleteLocalDataFailureTests.failedClearIsRetryableInProcess`; each `ifExists` vacuity-verified by neutralizing it in place — both halves are load-bearing.
-- **Build:** green (debug + release) · **Tests:** green — **355 tests, ZERO failures** on this branch (2026-09-02, full suite ×2) · **Simulator-verified:** n/a
-- ⚠ **The fork now caps the minor of every shared Point-Free dependency in a consumer's graph.** Nothing fails to resolve (TCA's own floors sit far below these bounds — verified against a TCA-shaped scratch graph), but a pin bump can surface a **downgrade**: MonteSproutKit resolves swift-dependencies 1.16.0 today and this fork holds it at 1.14.x. Intended trade — loud at `/mango-update` time beats silent in the field. If a consumer genuinely needs a newer minor, retarget here; never widen the range app-side.
+- **Build:** green · **Tests:** green — **371 tests, ZERO failures** on `mango/patches-1.12` (2026-09-02, full suite ×2; the retarget added upstream's 16 new tests) · **Simulator-verified:** n/a
+- ⚠ **The fork now caps the minor of every shared Point-Free dependency in a consumer's graph.** Nothing fails to resolve (TCA's own floors sit far below these bounds — verified against a TCA-shaped scratch graph), but the bounds move WITH the base at each retarget: on the 1.12 base swift-dependencies is bounded at 1.17.x (the 1.10-era "held at 1.14.x downgrade" note is obsolete — MonteSproutKit's 1.16.0 now moves UP). Intended trade — loud at `/mango-update` time beats silent in the field. If a consumer genuinely needs a newer minor, retarget here; never widen the range app-side.
 - ⚠ **A permanently unreadable row now retries forever** (patch 8, same accepted shape as patch 1): it re-enters the batch builder and reports once per send round, and a consumer's "waiting to upload" count stays non-zero for it. That is the deliberate trade against the silent drop; a cap is the consumer's policy call, not the library's.
 - ⚠ **A rebase that takes upstream's `tearDownSyncEngine` silently re-breaks patch 16** — both drops must stay `drop(ifExists: true)` (teardown's callback-trigger loop AND the per-table `dropTriggers`); the bare form compiles fine and only shows up as a failed `deleteLocalData()` retry.
 - ⚠ **Never route either read in `nextRecordZoneChangeBatch`'s provider back through `withErrorReporting`** — its optional-returning overload flattens `R??` to `R?`, which compiles fine and silently restores the 1.0(12) outage shape.
@@ -77,9 +77,12 @@
 
 ## Next Concrete Action
 
-> **Stop for review — the roadmap holds no unchecked work.** Nothing here is scheduled: the next
-> change to this fork is consumer-driven (a new MonteSprout/MangoSync incident record) or a retarget
-> onto the next upstream tag via `MANGO-PATCHES.md` § Rebase procedure. The one standing debt, if you
+> **Stop for review — the roadmap holds no unchecked work.** The 1.12.0 retarget is done here
+> (2026-09-02); the next concrete action lives in the CONSUMER repos: a coordinated `/mango-update`
+> that moves the sqlite-data pin onto `mango/patches-1.12` (MangoSync's declared `revision:` first,
+> apps in lockstep after) **together with** the TCA ≥ 1.26 / IssueReporting 2.x generation bump —
+> the 1.10-based pin and new-generation TCA cannot coexist in one graph (DECISIONS § 1.12.0
+> retarget). The one standing debt here, if you
 > want work without a trigger: **rewrite the five rotted vacuity guards** (patches 1, 5, 6, 7, 9) in
 > the neutralize-in-place style — `MANGO-PATCHES.md` § Guard executability.
 >
@@ -100,7 +103,7 @@
 
 ## Open Decisions (reversible — defaults chosen, proceeding)
 
-- **Upstream 1.10.0's stale `triggers()` snapshot** → chose **take only #522's two `TriggerTests` lines, not the whole commit; drop at the first tag containing #522** → DECISIONS.md § 2026-08-15 — 1.10.0 retarget
+- **Upstream 1.10.0's stale `triggers()` snapshot** → chose **take only #522's two `TriggerTests` lines, not the whole commit; drop at the first tag containing #522** → DECISIONS.md § 2026-08-15 — 1.10.0 retarget. **Closed 2026-09-02:** the 1.12.0 retarget retired the carry as planned (1.11.0 ships #522)
 - **How a retarget proves no patch was dropped, now that 5 of 9 guards have rotted** → chose **the byte-identity check on `Sources/SQLiteData/CloudKit/` is load-bearing; rewriting the rotted guards stays owed** → DECISIONS.md § 2026-08-15 — 1.10.0 retarget
 
 ---

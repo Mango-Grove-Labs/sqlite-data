@@ -345,3 +345,40 @@ of the participant story). Both red-first on their exact mechanisms; full suite 
 4. **The patch closes patch 5's documented limitation rather than widening patch 5.** It ships as
    its own numbered patch (16) with its own cherry-pick entry and guard, so a future rebase cannot
    lose it inside patch 5's conflict resolution — patch 5 lives in the region that already rots.
+
+## 2026-09-02 — 1.12.0 retarget (/mango-update): the first bound-forced fork upgrade
+
+Context: upstream released 1.11.0–1.12.0 (13 commits past our 1.10.0 base). Executed as the third
+linear retarget — new branch `mango/patches-1.12` cut at the `mango/patches-1.10` tip, upstream's
+`1.10.0..1.12.0` diff landed as one single-parent commit (now written into the rebase procedure as
+the canonical form; the cherry-pick list remains the conflict map).
+
+1. **Why now rather than "whenever": the IssueReporting 2.x clock.** The 1.12 base swaps
+   `xctest-dynamic-overlay` for `swift-issue-reporting` 2.1 in its tools-6.4 manifest, and TCA ≥
+   1.26 already requires `swift-issue-reporting` 2.1 — a consumer graph holding new-generation TCA
+   plus a 1.10-based fork (pinning `xctest-dynamic-overlay` 1.x) would vend the `IssueReporting`
+   module from two package identities and fail to resolve. Rebasing at a clean milestone beats
+   doing it under pressure mid-consumer-update.
+2. **Only the manifests conflicted; the merge deduplicated the #522 carry.** All six patched
+   CloudKit sources came through byte-identical (checked per Guard executability; upstream's only
+   CloudKit changes — `CloudKitSharing.swift` share-save routing via `database(for:)`, the
+   `DefaultSyncEngine` test scaffold — touch no patch). The carried `TriggerTests` re-record became
+   upstream's own (1.11.0 is the first tag with #522), closing that carry as planned.
+3. **The committed `Package.resolved` is toolchain-shaped, and that is accepted.** The tag's own
+   resolved file was produced by a 6.4 toolchain (pins `swift-issue-reporting`); on this fork's
+   6.3.3 toolchain the live manifest is `Package@swift-6.1.swift`, whose resolution swaps in
+   `xctest-dynamic-overlay` 1.13.1 and drops the 6.4-only pins. We commit what our own toolchain
+   resolves — it is what the suite actually runs against, and `ManifestBoundsTests` compares
+   floors against exactly this file. Rejected: hand-keeping upstream's resolved byte-for-byte,
+   which would divorce the tripwire from the tested graph.
+4. **Bounds moved WITH the base, per design (rebase step 5).** All three manifests (6.4 base +
+   both fallbacks — new `Package@swift-6.1.swift` included, and on 6.1–6.3 toolchains that one is
+   the LIVE manifest, not a fallback in the inert sense) carry `.upToNextMinor` floors equal to
+   1.12.0's own pins; `ManifestBoundsTests` now watches all three. The 4.1-era note that
+   swift-dependencies would show as a *downgrade* to 1.14.x in MonteSproutKit is obsolete: the
+   1.12 bound is 1.17.x, ahead of its current 1.16.0 resolution.
+5. **Consumer cascade is deliberately NOT part of this change.** Consumers stay pinned on
+   `mango/patches-1.10` revisions until their own `/mango-update`, which must move the sqlite-data
+   pin (MangoSync's declared `revision:` first, lockstep rule) **together with** the Point-Free
+   generation bump (TCA ≥ 1.26 / IssueReporting 2.x) — the two halves of one coordinated update,
+   not two independent ones.

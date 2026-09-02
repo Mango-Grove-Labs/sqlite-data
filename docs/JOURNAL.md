@@ -395,3 +395,18 @@ drop no longer reports a trigger that should have been there; nothing was built 
 patch-5 limitation is rewritten as closed, and the rebase procedure gains patch 16's cherry-pick
 entry (conflict trap: taking upstream restores the bare `drop()` on both sites, compiles fine,
 silently re-breaks the retry) and its neutralize-in-place guard.
+
+## 2026-09-02 — 1.12.0 retarget: the patch stack moves to the current upstream base
+
+`/mango-update` fork-maintenance run. `main` fast-forwarded to upstream (f4bf8e9 → 164bb5f, clean
+mirror); `mango/patches-1.12` cut at the `mango/patches-1.10` tip and upstream's `1.10.0..1.12.0`
+diff landed as one single-parent retarget commit — the third linear retarget, now recorded in the
+rebase procedure as the canonical form. Conflicts: the three manifest files only. Every dependency
+bound retuned to 1.12.0's own pins across all three manifests (the new `Package@swift-6.1.swift`
+is the LIVE manifest on this 6.3.3 toolchain); `ManifestBoundsTests` extended to watch all three.
+Byte-identity check clean — all six patched CloudKit sources identical to `mango/patches-1.10`;
+upstream's only CloudKit changes (share-save `database(for:)` routing, test scaffold) touch no
+patch. The carried `TriggerTests` #522 re-record retired as planned (1.11.0 ships #522). 371
+tests, zero failures, full suite ×2. Consumer pins deliberately unmoved: the cascade (MangoSync
+`revision:` first, apps after) must ride with each consumer's TCA ≥ 1.26 / IssueReporting 2.x
+bump — one coordinated update, recorded in DECISIONS.

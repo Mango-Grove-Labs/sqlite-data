@@ -14,34 +14,29 @@ import Testing
 //      version in `Package.resolved` — so a retarget that forgets to retune the bounds goes red
 //      here instead of shipping a range that excludes the code's own tested dependency.
 //
-// It fails on the manifest sources, so it is toolchain-independent: `Package@swift-6.0.swift` is
-// inert on the 6.1+ toolchains this fork builds with, and this is the only thing watching it.
+// It fails on the manifest sources, so it is toolchain-independent. Since the 1.12.0 base the
+// manifest is versioned three ways: `Package.swift` (tools 6.4) is what a current toolchain and
+// upstream CI use, `Package@swift-6.1.swift` is the manifest that ACTUALLY resolves on the 6.1–6.3
+// toolchains this fork currently builds with, and `Package@swift-6.0.swift` is inert everywhere we
+// build — every one of them propagates into some consumer's resolution graph, so every one is
+// checked.
 @Suite struct ManifestBoundsTests {
-  @Test func liveManifestDeclaresNoUnboundedRange() throws {
-    for dependency in try Self.dependencies(inManifest: "Package.swift") {
+  static let manifests = ["Package.swift", "Package@swift-6.1.swift", "Package@swift-6.0.swift"]
+
+  @Test(arguments: manifests)
+  func manifestDeclaresNoUnboundedRange(manifest: String) throws {
+    for dependency in try Self.dependencies(inManifest: manifest) {
       #expect(
         dependency.isBounded,
         """
-        \(dependency.identity) is declared with an unbounded `from:` in Package.swift. \
+        \(dependency.identity) is declared with an unbounded `from:` in \(manifest). \
         Bound it with `.upToNextMinor(from:)` — see MANGO-PATCHES.md § 3.
         """
       )
     }
   }
 
-  @Test func swift6FallbackManifestDeclaresNoUnboundedRange() throws {
-    for dependency in try Self.dependencies(inManifest: "Package@swift-6.0.swift") {
-      #expect(
-        dependency.isBounded,
-        """
-        \(dependency.identity) is declared with an unbounded `from:` in \
-        Package@swift-6.0.swift. Bound it with `.upToNextMinor(from:)` — see MANGO-PATCHES.md § 3.
-        """
-      )
-    }
-  }
-
-  @Test(arguments: ["Package.swift", "Package@swift-6.0.swift"])
+  @Test(arguments: manifests)
   func everyBoundMatchesTheResolvedMinor(manifest: String) throws {
     let resolved = try Self.resolvedVersions()
     for dependency in try Self.dependencies(inManifest: manifest) {
