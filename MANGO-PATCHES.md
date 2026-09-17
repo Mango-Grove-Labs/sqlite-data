@@ -55,7 +55,7 @@ Known limitations (accepted; observability planned in the consumer's MangoSync w
 *MonteSprout Phase 27.4d — observability for the invisible failure.*
 
 Upstream abandons several failed-save buckets (`.serverRejectedRequest`, the terminal bucket:
-`.badDatabase`/`.quotaExceeded`/…, and `@unknown default`) with no retry **and no signal** — a
+`.badDatabase`/`.limitExceeded`/…, and `@unknown default`) with no retry **and no signal** — a
 record failing there simply never reaches CloudKit, invisibly. The patch adds a
 `reportIssue(...)` naming the record type and CKError code on every such drop (diagnostic only —
 control flow unchanged, no per-code special-casing). Hosts bridge IssueReporting to their
@@ -277,7 +277,8 @@ The patch re-enqueues instead of dropping, on both paths — the patch-1 idiom a
   write. Without it, a delete abandoned in a transition leaves the record alive in the zone and the
   next fetch resurrects the row the user deleted.
 
-**Scoped to the two transition codes only.** A genuinely restricted or revoked account
+**Scoped to the two transition codes only** (patch 17 later parks `.quotaExceeded` as its own case,
+with its own collapsed report). A genuinely restricted or revoked account
 (`.managedAccountRestricted`, `.permissionFailure`, …) keeps upstream's give-up behavior — retrying
 those forever is churn that can never succeed. This is also why the retry is *cheap* where patch 1's
 is not: CKSyncEngine pauses automatic sync while the account is unavailable, so the parked change
@@ -305,9 +306,10 @@ Known limitations (accepted):
 - **`AuthTransitionRetryTests`** — pins the patched contract by injecting failures directly into
   `handleSentRecordZoneChanges` (the `DroppedSaveReportingTests` idiom): both transition codes
   re-enqueue their save, `.notAuthenticated` re-enqueues its delete, and the scope boundary holds in
-  both directions (`.quotaExceeded` and `.managedAccountRestricted` still drop, save and delete).
-  Reverting the patch sends the three retry tests red and leaves the three boundary tests green
-  (verified 2026-07-25).
+  both directions (`.limitExceeded` and `.managedAccountRestricted` still drop, save and delete —
+  `.quotaExceeded` was the save-side example until patch 17 moved it into the parked set, with its
+  own tests in the same file). Reverting the patch sends the three retry tests red and leaves the
+  boundary tests green (verified 2026-07-25).
 
 ### 7. Mirror the server record's `userModificationTime` into a column
 
@@ -847,6 +849,66 @@ call site treats teardown's success as the precondition for what follows.
   it goes red on `no such trigger`; both halves verified independently 2026-09-02, and each is
   load-bearing on its own.
 
+### 17. A full iCloud account parks the change for retry, never drops it — one report per episode
+
+*MonteSprout Phase 61.1 — the first stranded tester.*
+
+Upstream keeps `.quotaExceeded` in the failed-save handler's terminal bucket (patch 2's, and patch
+6's boundary example until now) and the failed-delete switch abandons it the same way. The bucket's
+argument — "retrying could never succeed" — is false for quota: the user frees space and the **same**
+change succeeds. So every row written while an account is full is removed from the queue for good,
+and nothing re-sends it until a cold launch (§ 9's rescan). Observed on hardware 2026-09-16
+(MonteSprout build 23, Sentry `7736897474`): a tester's first launch on a full free-tier account
+dropped all 45 of her seed records in one second, under a consumer banner promising a retry the
+engine never made.
+
+The patch is patch 6's shape applied to one more code, on both paths:
+
+- **save** → `newPendingRecordZoneChanges.append(.saveRecord(…))`, metadata untouched (the server's
+  copy is unknown, not stale), written through the 5.3b ledger like every park. CKSyncEngine honours
+  the server's `CKRetryAfter` (~5 min on the wire for quota), so a parked save costs one attempt per
+  window while the account stays full — cheap and bounded, and it is what makes a "we'll keep
+  trying" line true.
+- **delete** → `state.add(pendingRecordZoneChanges: [.deleteRecord(…)])`, silent, for patch 6's
+  reason: an abandoned delete leaves the record alive in the zone and the next fetch resurrects it.
+- **One report per `(zone, code)` per send, naming the count.** Patch 6 reports once per record per
+  round (its accepted trade); at quota scale that is 45 records × one attempt per retry window ≈
+  hundreds of identical events an hour from ONE phone. The save loop tallies parks into a
+  `CollapsedParkKey`/`CollapsedParkTally` (first-seen record types with counts) and reports once
+  **after** the loop, worded apart from both patch 2's "dropped … with no retry" and patch 6's
+  "parked … across an account transition":
+  `sqlite-data sync: parked 45 failed record save(s) for retry until iCloud storage frees —
+  zone=<zoneName> ckError=CKErrorCode(rawValue: 25) (25) recordTypes=students×18,observations×3`.
+  The first refused save's `CKError` rides along, so a reporter keyed on the error's type (MangoSync's
+  `SyncHealthReporter`) still sees code 25. The key is `(zone, code)` rather than just the code so a
+  shared room's zone reads as its own episode, and so a second collapsed code — should one ever
+  earn it — is never merged into quota's line.
+
+**Still scoped.** `.limitExceeded` (a request too large — resending the same batch cannot shrink it)
+and every other terminal code keep upstream's give-up behavior; `.managedAccountRestricted` is the
+boundary example on both paths.
+
+Known limitations (accepted):
+
+- **A report per retry round, per zone.** While the account stays full, each round that re-fails
+  reports once per zone. That is deliberate — the *rate* is now one event per `CKRetryAfter` window,
+  not one per record — and it is what a consumer's "still full" signal is built on.
+- **The library cannot clear the consumer's health line.** The parked/dropped distinction reaches
+  the host only through the report's wording and the error's code; naming the cause on screen is the
+  consumer's (MonteSprout 61.3).
+
+- **`AuthTransitionRetryTests`** (shared with patch 6) — `quotaExceededSave_isParked` (re-enqueued;
+  exactly one report, carrying the CKError, the count and the record types — via a recording
+  `IssueReporter` installed with `withIssueReporters`, since `withKnownIssue` cannot count),
+  `quotaExceededSaves_reportOncePerZoneAndCodePerSend` (three saves, two record types → one report
+  naming `3` and `reminders×2,remindersLists×1`), `quotaExceededDelete_isReEnqueuedForRetry`, and
+  the boundary in both directions (`terminalBucketSave_isStillDropped` on `.limitExceeded`,
+  `managedAccountRestrictedSave_isStillDropped`, `terminalBucketDelete_isStillDropped` on
+  `.managedAccountRestricted`). `DroppedSaveReportingTests.terminalBucket_reportsDroppedSave` moved
+  its example to `.limitExceeded`. Reverting the `SyncEngine.swift` hunks sends the three
+  `quotaExceeded*` tests red (8 expectation failures) and leaves every other test in the file green
+  (verified 2026-09-17).
+
 ### Characterization — what a "waiting to upload" count derived from `lastKnownServerRecord` cannot see
 
 *MonteSprout Phase 41.2a — no library change; a pinned fact consumers build on.*
@@ -1022,6 +1084,11 @@ declares it unbounded (`from: "0.36.0"`), so patch 3 is still ours to carry. Not
    **patch 16 (the two `drop(ifExists: true)` calls — `tearDownSyncEngine()`'s callback-trigger loop
    and the per-table `dropTriggers`; a conflict resolved by taking upstream restores the bare
    `drop()` on both, which compiles fine and silently re-breaks the in-process retry — check both)**,
+   **patch 17 (the `.quotaExceeded` case on BOTH `handleSentRecordZoneChanges` switches — save parks
+   + tallies into `collapsedParkedSaves`, delete re-enqueues — the one collapsed `reportIssue` loop
+   after the save loop, and the two private `CollapsedPark*` types; a conflict resolved by taking
+   upstream's case lists puts `.quotaExceeded` back in the terminal bucket on both switches with no
+   compile error — the same trap as patch 6's removed codes, check both lists)**,
    the test
    commits (take them from the tip of the previous `mango/patches-*` branch). Resolve conflicts by **idiom, not line
    number** — the `SyncEngine` error-handling region drifts. Patch 3 conflicts every time, because the
@@ -1097,6 +1164,12 @@ declares it unbounded (`from: "0.36.0"`), so patch 3 is still ours to carry. Not
      (`no such trigger: …` out of the retry's teardown), while `failedClearThrows` and
      `directCallClearsAndRestarts` stay green; restore → green. Both halves redden it independently
      (verified 2026-09-02).
+   - Neutralize patch 17 in place (move `.quotaExceeded` back into the terminal case list on either
+     `handleSentRecordZoneChanges` switch and delete its own case) → `swift test --filter
+     AuthTransitionRetryTests` must go **red** on `quotaExceededSave_isParked` +
+     `quotaExceededSaves_reportOncePerZoneAndCodePerSend` for the save switch and on
+     `quotaExceededDelete_isReEnqueuedForRetry` for the delete switch, while the six patch-6 tests
+     stay green (they pin the neighbours); restore → green (verified 2026-09-17 by reverting both).
    - Neutralize patch 12 in place (delete the notify loop at the top of
      `handleFetchedDatabaseChanges`) → `swift test --filter ZonePurgeDelegateTests` must go **red** on
      `aSharedZonePurgeNotifiesTheDelegateBeforeDeletingLocalRows` (zero notices), while
@@ -1105,7 +1178,7 @@ declares it unbounded (`from: "0.36.0"`), so patch 3 is still ours to carry. Not
 
    A rebase that skips these can silently drop a guard. **Before running any of them, read
    "Guard executability" above** — of the pre-Phase-8 guards only five still revert cleanly
-   (patch 10's is the fifth); patches 8, 11, 12 and 16 are **neutralize-in-place by definition** (above)
+   (patch 10's is the fifth); patches 8, 11, 12, 16 and 17 are **neutralize-in-place by definition** (above)
    and don't rot the same way. The byte-identity check described there is the check that actually
    rules out a dropped patch.
 

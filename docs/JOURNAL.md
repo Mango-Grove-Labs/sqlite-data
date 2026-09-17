@@ -395,3 +395,27 @@ drop no longer reports a trigger that should have been there; nothing was built 
 patch-5 limitation is rewritten as closed, and the rebase procedure gains patch 16's cherry-pick
 entry (conflict trap: taking upstream restores the bare `drop()` on both sites, compiles fine,
 silently re-breaks the retry) and its neutralize-in-place guard.
+
+## 2026-09-17 — Phase 11.1: patch 17, a full iCloud account parks the change for retry
+
+The first stranded tester (MonteSprout build 23, Sentry `7736897474`): a first launch on a full
+free-tier account dropped all 45 seed records in one second — `.quotaExceeded` sat in the terminal
+bucket, so the engine never retried while the consumer's banner said it would. Patch 17 applies patch
+6's shape to that one code on both `handleSentRecordZoneChanges` switches: the save is re-enqueued
+(ledger-durable), the delete too, and CKSyncEngine's own `CKRetryAfter` paces the retries while the
+account stays full. The save reports are collapsed — one per `(zone, code)` per send, naming the
+count and record types, worded apart from patches 2 and 6, carrying the first refused save's
+`CKError` so MangoSync's type-keyed reporter still sees code 25.
+
+Guards: `AuthTransitionRetryTests` gains `quotaExceededSave_isParked`,
+`quotaExceededSaves_reportOncePerZoneAndCodePerSend` (three saves, two record types → one report)
+and `quotaExceededDelete_isReEnqueuedForRetry`, counted through a recording `IssueReporter` installed
+with `withIssueReporters`; the boundary examples move to `.limitExceeded` /
+`.managedAccountRestricted`, and `DroppedSaveReportingTests` follows. Vacuity: reverting the source
+hunks reddens exactly the three (8 expectation failures) with every patch-6 test green. 358 tests,
+zero failures, full suite on the Swift 6.4 toolchain (a first-run "trait `CustomDump` … not
+declared by `swift-sharing`" resolution error was transient — a `swift package resolve` after the
+branch switch cleared it). MANGO-PATCHES gains § 17, the cherry-pick entry (the conflict trap is
+patch 6's: taking upstream's case lists puts quota back in the bucket with no compile error) and a
+neutralize-in-place guard. Landed on `mango/patches-1.10`, cherry-picked onto `mango/patches-1.12`;
+consumer pins move through MangoSync 0.9.2 (MonteSprout 61.2).
