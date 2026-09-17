@@ -33,11 +33,12 @@
 
       /// A member of the terminal "give up silently" bucket — reported generically (no per-code
       /// special-casing), which is what lets this surface the tester's still-unnamed error.
+      /// (`.limitExceeded` since patch 17 moved `.quotaExceeded` out of the bucket into the parked set.)
       @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
       @Test func terminalBucket_reportsDroppedSave() async {
         await withKnownIssue {
           await syncEngine.handleSentRecordZoneChanges(
-            failedRecordSaves: [failedSave(.quotaExceeded)],
+            failedRecordSaves: [failedSave(.limitExceeded)],
             syncEngine: syncEngine.private
           )
         }

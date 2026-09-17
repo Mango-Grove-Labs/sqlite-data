@@ -1,9 +1,9 @@
 # Project Progress
 
 - **Project:** sqlite-data (Mango fork of pointfreeco/sqlite-data)
-- **Target milestone:** Open patch work done — **reached** (Phase 4 closed by patch 16); stop for review
-- **Status:** `milestone-reached` — every box on the roadmap is checked. Patches 1–16 now sit on **`mango/patches-1.12`** (upstream 1.12.0; the 2026-09-02 `/mango-update` retarget). Consumers still pin `mango/patches-1.10` revisions until their own coordinated `/mango-update` (sqlite-data pin + TCA ≥ 1.26 / IssueReporting 2.x together — see DECISIONS § 1.12.0 retarget).
-- **Updated:** 2026-09-02
+- **Target milestone:** Open patch work done — **reached** (Phase 4 closed by patch 16; Phase 11's patch 17 landed on request); stop for review
+- **Status:** `milestone-reached` — every box on the roadmap is checked. Patches 1–17 sit on **`mango/patches-1.12`** (upstream 1.12.0; the 2026-09-02 `/mango-update` retarget) and on `mango/patches-1.10`, the adopted consumer base. Consumers still pin `mango/patches-1.10` revisions until their own coordinated `/mango-update` (sqlite-data pin + TCA ≥ 1.26 / IssueReporting 2.x together — see DECISIONS § 1.12.0 retarget).
+- **Updated:** 2026-09-17
 
 ---
 
@@ -58,16 +58,20 @@
 - [x] **Phase 10 — The ledger's false positive on applied records (MonteSprout Phase 55.2b-2)** _(red-first; evidence: the consumer's `docs/research/2026-08-23-two-account-session-findings.md` § F4)_
   - [x] 10.1 Patch 14 — a write the sync engine performed is not a user modification → the `isSynchronizing` guard on the trigger's `userModificationTime`, the mirror taking the stamp the server record CARRIED, and the repair migration patch 9's rescan needs
   - [x] 10.2 Patch 15 — the slim-ack residual → the stamp the SENT record carried is written down at batch build and moved into the mirror by its ack _(`MANGO-PATCHES.md` § 15)_
+- [x] **Phase 11 — The stranded tester: a full iCloud account (MonteSprout Phase 61.1)** _(evidence: Sentry `7736897474` — 45 `quotaExceeded` drops in one second on a tester's first launch; the consumer's DECISIONS § "2026-09-16 — Phase 61 planned" 1)_
+  - [x] 11.1 Patch 17 — `.quotaExceeded` parks for retry on both paths (patch 6's shape), one collapsed report per `(zone, code)` per send naming the count _(`MANGO-PATCHES.md` § 17)_
 
 ---
 
 ## Current Status
 
-- **Current phase / sub-phase:** none in flight — Phase 4 complete, the "Open patch work done" milestone reached
+- **Current phase / sub-phase:** none in flight — Phase 11 complete (patch 17), the "Open patch work done" milestone still reached
 - **State:** milestone-reached
-- **Last completed:** 4.3 — patch 16. Both trigger drops in teardown are now `drop(ifExists: true)` (the per-table `dropTriggers` loop and `SyncMetadata`'s callback triggers), so a `deleteLocalData()` that failed and rolled back can be **retried in-process** once the cause is fixed instead of dying in teardown on `no such trigger`. Closes patch 5's known limitation. Red-first guard `DeleteLocalDataFailureTests.failedClearIsRetryableInProcess`; each `ifExists` vacuity-verified by neutralizing it in place — both halves are load-bearing.
-- **Build:** green · **Tests:** green — **371 tests, ZERO failures** on `mango/patches-1.12` (2026-09-02, full suite ×2; the retarget added upstream's 16 new tests) · **Simulator-verified:** n/a
+- **Last completed:** 11.1 — patch 17. `.quotaExceeded` is no longer terminal: a refused save is re-enqueued (ledger-durable, like every park) and a refused delete too, so a full iCloud account's changes send themselves once space frees, on CKSyncEngine's own `CKRetryAfter` cadence; the save reports are collapsed to ONE per `(zone, code)` per send naming the count and record types (`parked 45 failed record save(s) for retry until iCloud storage frees — … recordTypes=students×18,…`), worded apart from patch 2's and patch 6's so a host can tell the three apart. `.limitExceeded` and `.managedAccountRestricted` are the boundary examples now. Guards: `AuthTransitionRetryTests.quotaExceeded*` (three; a recording `IssueReporter` counts the reports), vacuity-verified by reverting the source hunks — 8 expectation failures, every patch-6 test green. Landed on `mango/patches-1.10` and cherry-picked onto `-1.12`.
+- **Before that:** 4.3 — patch 16. Both trigger drops in teardown are now `drop(ifExists: true)` (the per-table `dropTriggers` loop and `SyncMetadata`'s callback triggers), so a `deleteLocalData()` that failed and rolled back can be **retried in-process** once the cause is fixed instead of dying in teardown on `no such trigger`. Closes patch 5's known limitation. Red-first guard `DeleteLocalDataFailureTests.failedClearIsRetryableInProcess`; each `ifExists` vacuity-verified by neutralizing it in place — both halves are load-bearing.
+- **Build:** green · **Tests:** green — **374 tests, ZERO failures** on `mango/patches-1.12` (2026-09-17, full suite, Swift 6.4 / Xcode 27 toolchain) · **Simulator-verified:** n/a
 - ⚠ **The fork now caps the minor of every shared Point-Free dependency in a consumer's graph.** Nothing fails to resolve (TCA's own floors sit far below these bounds — verified against a TCA-shaped scratch graph), but the bounds move WITH the base at each retarget: on the 1.12 base swift-dependencies is bounded at 1.17.x (the 1.10-era "held at 1.14.x downgrade" note is obsolete — MonteSproutKit's 1.16.0 now moves UP). Intended trade — loud at `/mango-update` time beats silent in the field. If a consumer genuinely needs a newer minor, retarget here; never widen the range app-side.
+- ⚠ **A full account now reports once per zone per retry window, indefinitely** (patch 17): the rate is one event per `CKRetryAfter` window while the account stays full, not one per record — that is the signal a consumer's "still full" reading is built on, and naming the cause on screen is the consumer's job (MonteSprout 61.3), not the library's.
 - ⚠ **A permanently unreadable row now retries forever** (patch 8, same accepted shape as patch 1): it re-enters the batch builder and reports once per send round, and a consumer's "waiting to upload" count stays non-zero for it. That is the deliberate trade against the silent drop; a cap is the consumer's policy call, not the library's.
 - ⚠ **A rebase that takes upstream's `tearDownSyncEngine` silently re-breaks patch 16** — both drops must stay `drop(ifExists: true)` (teardown's callback-trigger loop AND the per-table `dropTriggers`); the bare form compiles fine and only shows up as a failed `deleteLocalData()` retry.
 - ⚠ **Never route either read in `nextRecordZoneChangeBatch`'s provider back through `withErrorReporting`** — its optional-returning overload flattens `R??` to `R?`, which compiles fine and silently restores the 1.0(12) outage shape.
@@ -86,8 +90,9 @@
 > want work without a trigger: **rewrite the five rotted vacuity guards** (patches 1, 5, 6, 7, 9) in
 > the neutralize-in-place style — `MANGO-PATCHES.md` § Guard executability.
 >
-> ⚠ Patches 13, 14, 15 and 16 are **inert for MonteSprout until it bumps its pin** (still `d84eeaa`,
-> the patch-14 tip) — that bump is `/mango-update`'s job in that repo, never a side effect of work here.
+> ⚠ Patches 15, 16 and 17 are **inert for MonteSprout until it bumps its pin** (still `d84eeaa`,
+> the patch-14 tip) — that bump is `/mango-update`'s job in that repo (its 61.2, through MangoSync
+> 0.9.2), never a side effect of work here.
 >
 > **Settled 2026-08-16: the consumer base is `mango/patches-1.10` @ `e18249a`** — decided by action
 > (MangoSync 0.7.2 pins it, every Mango app bumped in lockstep to the same revision and SSH URL, per

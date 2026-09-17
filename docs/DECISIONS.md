@@ -382,3 +382,33 @@ the canonical form; the cherry-pick list remains the conflict map).
    pin (MangoSync's declared `revision:` first, lockstep rule) **together with** the Point-Free
    generation bump (TCA ≥ 1.26 / IssueReporting 2.x) — the two halves of one coordinated update,
    not two independent ones.
+## 2026-09-17 — Phase 11 (patch 17): a full iCloud account is a wait, not a verdict
+
+1. **`.quotaExceeded` leaves the terminal bucket on both paths.** The bucket's argument ("retrying
+   could never succeed") holds for `.limitExceeded` (the same batch cannot shrink) and for a restricted
+   account, and is simply false for quota: the user frees space and the same change succeeds. Patch
+   6's shape is reused verbatim — save re-enqueued with metadata untouched, delete re-enqueued
+   silently (an abandoned delete resurrects the row on the next fetch), both through the 5.3b ledger.
+   The delete half is included although CloudKit is not known to refuse a delete on quota: leaving
+   quota terminal on one switch and parked on the other is the asymmetry a future reader trips on, and
+   it costs one case label.
+2. **One report per `(zone, code)` per send, not one per record.** Patch 6 accepted a report per
+   record per round because a transition is short and rare; a full account is neither (45 records ×
+   one attempt per `CKRetryAfter` window ≈ hundreds of identical events an hour from one phone). The
+   tally is keyed on the zone as well as the code so a shared room's zone reads as its own episode,
+   and so a second collapsed code can never be merged into quota's line. Patch 6's per-record reports
+   are left as they are — changing them would change an existing telemetry contract for no incident.
+3. **The report carries the first refused save's `CKError`, and its own wording.** MangoSync's
+   `SyncHealthReporter` keys purely on `error as? CKError`, so the code must ride the report; the
+   message is worded apart from patch 2's "dropped … with no retry" and patch 6's "parked … across an
+   account transition" so a host can tell the three apart by text without parsing. Record types ride
+   as `students×18,observations×3` — a seed batch and a stray edit read differently at no extra event.
+4. **The boundary examples move.** `.quotaExceeded` was the terminal example in `AuthTransitionRetryTests`
+   and `DroppedSaveReportingTests`; both now use `.limitExceeded` (quota's nearest sibling — the code a
+   sloppy widening would catch next), and `.managedAccountRestricted` stays the restricted-account
+   example on both paths. Rejected: dropping the sibling test in favour of the restricted one alone —
+   the two guard different edges of the same bucket.
+5. **Counting reports needs a recording reporter, not `withKnownIssue`.** `withKnownIssue` absorbs
+   any number of issues, so it cannot pin "exactly one"; the test installs a `RecordingIssueReporter`
+   via `withIssueReporters`, which replaces swift-testing's reporter for the scope and lets the
+   assertions run outside it (the known trap: expectations inside `withKnownIssue` are swallowed).

@@ -2055,6 +2055,13 @@
         syncEngine.state.add(pendingDatabaseChanges: newPendingDatabaseChanges)
         syncEngine.state.add(pendingRecordZoneChanges: newPendingRecordZoneChanges)
       }
+      // MANGO PATCH 17 — the saves a full iCloud account refused are parked for retry (the case below),
+      // and their reports are COLLAPSED: one per (zone, code) per send, naming the count. A batch of
+      // 45 records refused at once, re-sent every `CKRetryAfter` window while the account stays full,
+      // would otherwise be hundreds of identical events an hour from ONE phone (Sentry 7736897474 was
+      // 45 in a second). The tally is keyed like the report is worded, so a second zone (a shared
+      // room's) or a second collapsed code ever added reads as its own episode, never merged.
+      var collapsedParkedSaves: OrderedDictionary<CollapsedParkKey, CollapsedParkTally> = [:]
       for (failedRecord, error) in failedRecordSaves {
         func clearServerRecord() async {
           await withErrorReporting(.sqliteDataCloudKitFailure) {
@@ -2239,12 +2246,33 @@
           newPendingRecordZoneChanges.append(.saveRecord(failedRecord.recordID))
           continue
 
+        // MANGO PATCH 17 — a full iCloud account is not a verdict on the record either. Upstream (and
+        // patch 6's boundary, until now) keeps `.quotaExceeded` in the terminal bucket below, whose
+        // argument — "retrying could never succeed" — is false for quota: the user frees space and the
+        // SAME save succeeds. Observed on hardware 2026-09-16 (MonteSprout build 23, Sentry
+        // 7736897474): a tester's first launch on a full account dropped every one of her 45 seed
+        // records, under a banner promising a retry the engine never made. Park the save instead,
+        // patch-6 style; CKSyncEngine honours the server's `CKRetryAfter` (~5 min on the wire), so a
+        // parked quota save costs one attempt per window while the account stays full — cheap and
+        // bounded. The report is collapsed per (zone, code) per send — see `collapsedParkedSaves`.
+        //
+        // Still scoped: `.limitExceeded` (a request too large — resending the same batch cannot
+        // shrink it) and every other terminal code keep upstream's give-up behavior.
+        case .quotaExceeded:
+          newPendingRecordZoneChanges.append(.saveRecord(failedRecord.recordID))
+          collapsedParkedSaves[
+            CollapsedParkKey(zoneID: failedRecord.recordID.zoneID, code: error.code),
+            default: CollapsedParkTally(error: error)
+          ]
+          .count(failedRecord.recordType)
+          continue
+
         case .networkFailure, .networkUnavailable, .zoneBusy, .serviceUnavailable,
           .operationCancelled,
           .internalError, .partialFailure, .badContainer, .requestRateLimited, .missingEntitlement,
           .invalidArguments, .resultsTruncated, .assetFileNotFound,
           .assetFileModified, .incompatibleVersion, .constraintViolation, .changeTokenExpired,
-          .badDatabase, .quotaExceeded, .limitExceeded, .userDeletedZone, .tooManyParticipants,
+          .badDatabase, .limitExceeded, .userDeletedZone, .tooManyParticipants,
           .alreadyShared, .managedAccountRestricted, .participantMayNeedVerification,
           .serverResponseLost, .assetNotAvailable:
           reportDroppedSave()
@@ -2257,6 +2285,21 @@
           reportDroppedSave()
           continue
         }
+      }
+      // MANGO PATCH 17 — one report per collapsed episode. Worded apart from BOTH patch 2's "dropped …
+      // with no retry" and patch 6's "parked … across an account transition", so a host's telemetry
+      // can tell the three apart; the CKError rides along so a reporter keyed on the error's type
+      // (MangoSync's `SyncHealthReporter`) still sees the code. Reported OUTSIDE the enclosing loop,
+      // after every save has been sorted, so the count is the whole batch's.
+      for (key, tally) in collapsedParkedSaves {
+        reportIssue(
+          tally.error,
+          """
+          sqlite-data sync: parked \(tally.total) failed record save(s) for retry until iCloud storage \
+          frees — zone=\(key.zoneID.zoneName) ckError=\(key.code) (\(key.code.rawValue)) \
+          recordTypes=\(tally.recordTypesSummary)
+          """
+        )
       }
 
       let enqueuedUnsyncedRecordID =
@@ -2288,11 +2331,19 @@
                 syncEngine.state.add(pendingRecordZoneChanges: [.deleteRecord(failedRecordID)])
                 reEnqueuedDeletes.withValue { $0.append(.deleteRecord(failedRecordID)) }
                 break
+              // MANGO PATCH 17 — the failed-DELETE half, for the same reason as patch 6's: a delete
+              // abandoned under a full account would leave the record alive in the zone, and the next
+              // fetch would resurrect the row the user deleted. Re-enqueue, silently (same reasoning as
+              // the case above); the quota clears when space frees, exactly as for the save.
+              case .quotaExceeded:
+                syncEngine.state.add(pendingRecordZoneChanges: [.deleteRecord(failedRecordID)])
+                reEnqueuedDeletes.withValue { $0.append(.deleteRecord(failedRecordID)) }
+                break
               case .networkFailure, .networkUnavailable, .zoneBusy, .serviceUnavailable,
                 .operationCancelled, .internalError, .partialFailure,
                 .badContainer, .requestRateLimited, .missingEntitlement, .invalidArguments,
                 .resultsTruncated, .assetFileNotFound, .assetFileModified, .incompatibleVersion,
-                .constraintViolation, .changeTokenExpired, .badDatabase, .quotaExceeded,
+                .constraintViolation, .changeTokenExpired, .badDatabase,
                 .limitExceeded, .userDeletedZone, .tooManyParticipants, .alreadyShared,
                 .managedAccountRestricted, .participantMayNeedVerification, .serverResponseLost,
                 .assetNotAvailable, .permissionFailure,
@@ -3079,6 +3130,36 @@
   private struct ActivityCounts {
     var sendingChangesCount = 0
     var fetchingChangesCount = 0
+  }
+
+  // MANGO PATCH 17 — one collapsed park report per (zone, code) per send. The key is the identity
+  // of an episode as the report words it; the tally is what the one report says about it.
+  private struct CollapsedParkKey: Hashable {
+    let zoneID: CKRecordZone.ID
+    let code: CKError.Code
+  }
+
+  private struct CollapsedParkTally {
+    /// The first refused save's error — what the one report is filed under, so a reporter keyed on
+    /// the error's type still sees a `CKError` carrying the code.
+    let error: CKError
+    private(set) var countsByRecordType: OrderedDictionary<String, Int> = [:]
+
+    init(error: CKError) {
+      self.error = error
+    }
+
+    mutating func count(_ recordType: String) {
+      countsByRecordType[recordType, default: 0] += 1
+    }
+
+    var total: Int { countsByRecordType.values.reduce(0, +) }
+
+    /// `students×18,observations×3` — the record types in first-seen order, so a reader can tell a
+    /// seed batch from a stray edit without a second event.
+    var recordTypesSummary: String {
+      countsByRecordType.map { "\($0.key)×\($0.value)" }.joined(separator: ",")
+    }
   }
 
   #if DEBUG
