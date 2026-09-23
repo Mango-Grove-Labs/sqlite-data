@@ -933,6 +933,49 @@ after a round trip and diverge exactly while an edit is unsent. It must be read 
   the count is 0; after a local edit with no sync round the count is **still** 0, the local time has moved past
   the server's, and the engine's own pending set does hold the save.
 
+### Characterization — a slim save ack poisons the per-field merge baseline (F47)
+
+*MonteSprout Phase 82.8 — no library change; the desk repro of a field divergence, on branch
+`f47-repro` off the consumer-pinned `5180dbd`. The fix, if there is to be one here, is a separate
+decision (the owner's call).*
+
+A real CloudKit save acknowledgement does not carry the record's encrypted custom fields — the fact
+patch 7's F2 amendment already records from the stamp's side. `refreshLastKnownServerRecord`
+(`SyncEngine.swift`) writes whatever the ack holds into **`_lastKnownServerRecordAllFields`**, and that
+archive is the baseline the next fetch's per-field merge reads (`upsertFromServerRecord` →
+`CKRecord.update(with:row:columnNames:)`). A column whose local value differs from the baseline is read
+as "an unsent local edit" and is removed from the columns the incoming server record may write. Against a
+**slim** archive every **non-NULL** local column differs — so another writer's edit to any of them is
+dropped locally while it stands on the server. NULL columns match the slim archive and still take the
+server's value, which is the discriminator that names the mechanism.
+
+Two properties the hypothesis did not predict, both pinned by the tests:
+
+- **The divergence is permanent and silent.** The fetch that delivered the dropped edit heals the archive
+  (it calls `setLastKnownServerRecord` with the full fetched record) and re-enqueues nothing, so both
+  sides believe they are in sync while they disagree — MonteSprout's 74.5 reading, twenty minutes of
+  three-device disagreement behind clean sync doctors.
+- **No local edit is needed.** Any row this device has **uploaded** is exposed until a full fetch of it
+  re-heals the archive; "two people in one row inside one unsynced window" is not the precondition.
+
+The mock's save results echo the stored record in full, so reproducing this needed one new test-only
+capability: **`MockCloudDatabase.enableSlimSaveAcks()`** (`State.slimSaveAcks`, default **off** —
+`package`, additive, no upstream symbol touched), which strips `encryptedValues` from the acknowledged
+copy while leaving the stored record and every system field alone.
+
+- **`SlimSaveAckMergeTests`** — four tests: `fullSaveAck_convergesOnTheLeadsWords` (the vacuity check —
+  the identical script under the full echo converges on the second writer's value),
+  `slimSaveAck_leavesTheAuthorsDeviceDivergedForGood` (the repro, plus the healed archive and the empty
+  pending set), `slimSaveAck_dropsTheNonNullColumnsOnly` (the mechanism: `title` dropped, NULL `priority`
+  applied, same round), `slimSaveAck_hitsARowThisDeviceOnlyUploaded` (the width). Guard, verified
+  2026-09-23: neutering the strip in `slimSaveAck(of:)` reddens exactly the three `slimSaveAck_*` tests on
+  their divergence assertions and leaves the control green.
+- **Limit of the evidence:** `refreshLastKnownServerRecord` only replaces the archive when the archived
+  record carries no `modificationDate` or an older one. The mock sets none, so the replacement is always
+  taken here. Against the real service a fresh save's ack carries a newer `modificationDate` than the
+  archive it replaces, so the same branch is taken — reasoning, not desk evidence, and the one place a
+  real-world narrowing of the trigger could hide.
+
 ### Test commits — patch 3 (no library behavior change)
 
 - **`PendingRecordMetadataDecodeTests`** — the tripwire for patch 3. Exercises the send path's

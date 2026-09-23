@@ -14,6 +14,15 @@
     package struct State {
       private var lastRecordChangeTag = 0
       package var storage: [CKRecordZone.ID: Zone] = [:]
+      /// MANGO (MonteSprout Phase 82.8, F47) — acknowledge a save the way the real service does.
+      ///
+      /// The mock echoes the stored record back as a save result, encrypted custom fields and all. A real
+      /// CloudKit save ack does not carry them (patch 7's F2 amendment is the same observation, from the
+      /// stamp's side), which matters because `refreshLastKnownServerRecord` writes whatever the ack holds
+      /// into `_lastKnownServerRecordAllFields` — the archive the next fetch's per-field merge reads. Opt in
+      /// per database (`enableSlimSaveAcks()`), never on by default: every existing test is written against
+      /// the echo.
+      package var slimSaveAcks = false
       var assets: [AssetID: Data] = [:]
       var deletedRecords: [(CKRecord.ID, CKRecord.RecordType)] = []
       mutating func nextRecordChangeTag() -> Int {
@@ -38,6 +47,23 @@
 
     package func set(container: MockCloudContainer) {
       _container.set(container)
+    }
+
+    /// MANGO (MonteSprout Phase 82.8, F47) — see `State.slimSaveAcks`.
+    package func enableSlimSaveAcks() {
+      state.withValue { $0.slimSaveAcks = true }
+    }
+
+    /// MANGO (MonteSprout Phase 82.8, F47) — a save acknowledgement with the encrypted custom fields
+    /// stripped, as the real service returns it. System fields (record ID, type, change tag, parent,
+    /// share reference) and unencrypted keys are kept.
+    private static func slimSaveAck(of record: CKRecord) -> CKRecord {
+      guard let ack = record.copy() as? CKRecord
+      else { fatalError("Could not copy CKRecord.") }
+      for key in ack.encryptedValues.allKeys() {
+        ack.encryptedValues[key] = nil
+      }
+      return ack
     }
 
     package var container: MockCloudContainer {
@@ -203,7 +229,11 @@
               // TODO: This should merge copy's values to more accurately reflect reality
               state.storage[recordToSave.recordID.zoneID]?.records[recordToSave.recordID] =
                 databaseCopy
-              saveResults[recordToSave.recordID] = .success(databaseCopy.copy() as! CKRecord)
+              saveResults[recordToSave.recordID] = .success(
+                state.slimSaveAcks
+                  ? Self.slimSaveAck(of: databaseCopy)
+                  : (databaseCopy.copy() as! CKRecord)
+              )
 
               // NB: "Touch" parent records when saving a child:
               if let parent = recordToSave.parent,
