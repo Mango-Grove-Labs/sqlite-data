@@ -209,7 +209,15 @@
         try SyncMetadata
           .where { $0.recordName.eq(recordName) }
           .update {
-            $0.setLastKnownServerRecord(savedRootRecord)
+            // MANGO PATCH 18 (F47) — `savedRootRecord` is this save's acknowledgement, which carries
+            // no encrypted custom fields on the real service. Archiving it whole emptied the per-field
+            // merge's baseline and made the next fetch drop every other writer's edit to a non-NULL
+            // column. `lastKnownServerRecord` here is the record this call actually SENT (it was
+            // fetched from the server moments earlier and handed straight to `modifyRecords`), which
+            // is the values half patch 18 asks for; the ack is only the new system fields.
+            $0.setLastKnownServerRecord(
+              lastKnownServerRecord.mergingSaveAcknowledgement(savedRootRecord)
+            )
             $0.share = #bind(savedShare)
           }
           .execute(db)

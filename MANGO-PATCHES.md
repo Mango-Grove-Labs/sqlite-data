@@ -925,6 +925,96 @@ Known limitations (accepted):
   `quotaExceeded*` tests red (8 expectation failures) and leaves every other test in the file green
   (verified 2026-09-17).
 
+### 18. A save acknowledgement re-stamps the last-known archive, it never replaces it
+
+*MonteSprout Phase 82.9a — the fix for F47, the field divergence diagnosed in the characterization
+section "a slim save ack poisons the per-field merge baseline" below. Candidate A of the two that
+section offered; the owner picked it 2026-09-23 and build 29
+ships it. This is a **data-correctness** patch: before it, another teacher's edit could be lost on a
+device for good, behind every probe we have reading healthy.*
+
+The bug in one line: **`_lastKnownServerRecordAllFields` was being written from a record that has no
+fields.**
+
+A real CloudKit save ack carries the server's system fields and **none of the encrypted custom values**
+(patch 7's F2 amendment records the same fact from the stamp's side, and patch 15 exists because of it).
+`refreshLastKnownServerRecord` archived that ack wholesale, so after this device's own upload the archive
+held no values at all. That archive is the baseline the next fetch's per-field merge reads
+(`upsertFromServerRecord` → `CKRecord.update(with:row:columnNames:)`), where a local column differing
+from the baseline is read as *an unsent local edit* and removed from the columns the incoming server
+record may write. Against an empty baseline **every non-NULL local column differs**, so the other
+writer's edit to any of them was dropped locally while it stood on the server — and permanently, because
+the same fetch healed the archive and re-enqueued nothing. The full mechanism, its two surprises (it is
+silent, and it needs no local edit — merely having uploaded the row is the precondition) and the
+discriminator that named it are in that characterization section.
+
+The patch:
+
+- **`CKRecord.mergingSaveAcknowledgement(_:)`** (`CloudKit+StructuredQueries.swift`) — the ack's system
+  fields over the receiver's values. Implemented as *a copy of the ack, with every value key it does not
+  set filled in from the receiver*, so a container that echoes saves in full (the mock's default, and
+  CloudKit whenever it chooses to echo) still wins on its own merits, exactly as patch 15's `max` does
+  for the stamp. Returns the ack untouched if the record IDs disagree or the copy fails.
+- **The unencrypted half is deliberately narrow: `CKAsset`s only.** Assets are the one value this library
+  stores outside `encryptedValues` (`setAsset(_:forKey:at:)` — the hash and stamp live encrypted beside
+  them). Everything else unencrypted is the record's own bookkeeping, including `_recordChangeTag`, which
+  must stay the **ack's**: an older one would claim an older server version to `MockSyncEngine`'s
+  change-tag ordering. ⚠️ Back-filling plain keys indiscriminately is not merely untidy — CloudKit
+  **throws** on a reserved key, which is how this was found (an `NSException` out of the subscript
+  setter, mid-test).
+- **The values come from the record this device SENT, not from the archive** — `sentRecords`, an
+  in-memory `[CKRecord.ID: CKRecord]` on the engine, filled in `nextRecordZoneChangeBatch` beside patch
+  15's `recordSentUserModificationTimes` and emptied by every outcome (ack or refusal) and by `stop()`.
+  This is the half no desk test could motivate, and the reason it is not optional: the batch builder's
+  own `refreshLastKnownServerRecord` call is **skipped** for any row whose archive already carries a
+  `modificationDate`, because the outgoing record is built FROM that archive and inherits its date, so
+  the guard answers "not newer". The mock sets `modificationDate` on nothing, so at the desk that call is
+  always taken and the archive happens to hold what was just sent; **against the real service it is
+  always skipped and the archive holds the last *fetch*'s values.** Merging those would have archived a
+  copy of the row the server no longer has and left F47 standing in the field with every test green.
+  The archive stays the fallback for the window the map cannot cover (a relaunch between send and ack),
+  where it is no worse than the behavior this patch replaces.
+- **Two call sites, both of them save acks.** `handleSentRecordZoneChanges` passes
+  `isSaveAcknowledgement: true` with the sent record (the fetch-side and batch-builder calls are
+  unchanged — the batch builder's record is full, and back-filling there would resurrect a value the
+  local row has since cleared). `CloudKitSharing.share(record:)`'s post-save update merges too, and needs
+  no map: its `lastKnownServerRecord` **is** the record it handed to `modifyRecords`, so it is already
+  the values half and `savedRootRecord` is only the new system fields.
+- **Interaction with patch 15 (checked, not assumed).** The merged record now carries the sent
+  `userModificationTime`, so `setLastKnownServerRecord` mirrors it directly — the value patch 15's
+  ack-side move would put there anyway, and that move runs **after** with a `max`, so it leaves it alone.
+  Patch 15 keeps its job for the archive-less first save and for a change that dies before its ack. F2's
+  rule is not bent: the stamp restored here is one this device put on the wire, never the `?? -1`
+  invention.
+- **What it does *not* do (and why candidate B was refused).** The alternative — take the server record
+  whole whenever the baseline is fieldless — also converges, but in that window the server would win over
+  a **genuinely unsent local edit**. Merging keeps the baseline honest instead, so an unsent edit still
+  reads as unsent and still wins its column. `slimSaveAck_stillProtectsAGenuinelyUnsentLocalEdit` is that
+  line drawn in a test.
+
+- **`SlimSaveAckMergeTests`** — the characterization's four tests, flipped: `slimSaveAck_convergesOnTheLeadsWords`
+  (with the archive asserted non-empty right after the upload — the patch itself),
+  `slimSaveAck_appliesTheNonNullColumnsToo`, `slimSaveAck_appliesToARowThisDeviceOnlyUploaded`, plus the
+  untouched full-echo control `fullSaveAck_convergesOnTheLeadsWords` and two new pins —
+  `slimSaveAck_stillProtectsAGenuinelyUnsentLocalEdit` (candidate B's refusal) and
+  `slimSaveAck_archivesWhatWasSent_notWhateverTheArchiveHeld`, which removes the mock's coincidence
+  rather than simulating the date: it poisons the archive in the window between the batch going out and
+  its ack (the seam `NextRecordZoneChangeBatchTests.editBetweenBatchAndSentRecordZoneChanges` uses),
+  which is the state the field is always in. **Guard, verified 2026-09-23 in the 5.3a style —
+  neutralize in place, never revert the commit:** passing `isSaveAcknowledgement: false` at the ack call
+  site reddens exactly the three convergence tests and leaves the control and the unsent-edit pin green;
+  passing `sentRecord: nil` there reddens `slimSaveAck_archivesWhatWasSent_notWhateverTheArchiveHeld`
+  and only that one. (The unsent-edit pin passes either way by design; it guards against a later
+  candidate-B simplification, not against this patch's absence, and the file says so.)
+- **Fork suite 364 pass, 15 pre-existing known issues** (2026-09-23) — no snapshot re-recording needed:
+  the patch adds no column and changes no `SyncMetadata` dump.
+- ⚠️ **Rebase note.** The hunks sit in files patches 7/14/15 already touch. Two to re-check: the
+  `nextRecordZoneChangeBatch` tail, where the map is filled next to patch 15's write, and
+  `CloudKitSharing.share(record:)` — upstream reshuffles that function more often than `SyncEngine`'s
+  ack loop, and the merge there reads two locals by name.
+- ⚠️ **Not yet on `mango/patches-1.12`.** This landed on the consumer branch `mango/patches-1.10`, which
+  is what MonteSprout pins; the 1.12 stack carries patches 1–17 only until someone retargets it.
+
 ### Characterization — what a "waiting to upload" count derived from `lastKnownServerRecord` cannot see
 
 *MonteSprout Phase 41.2a — no library change; a pinned fact consumers build on.*
@@ -952,8 +1042,10 @@ after a round trip and diverge exactly while an edit is unsent. It must be read 
 ### Characterization — a slim save ack poisons the per-field merge baseline (F47)
 
 *MonteSprout Phase 82.8 — no library change; the desk repro of a field divergence, on branch
-`f47-repro` off the consumer-pinned `5180dbd`. The fix, if there is to be one here, is a separate
-decision (the owner's call).*
+`f47-repro` off the consumer-pinned `5180dbd`.* ⚠️ **Superseded by patch 18**, which is the fix the
+owner picked (candidate A) the next box on; this section is kept as the diagnosis, and its tests now
+live on as patch 18's convergence pins under the names § 18 lists. Read it for the mechanism, never
+for current behavior.
 
 A real CloudKit save acknowledgement does not carry the record's encrypted custom fields — the fact
 patch 7's F2 amendment already records from the stamp's side. `refreshLastKnownServerRecord`
@@ -979,18 +1071,16 @@ capability: **`MockCloudDatabase.enableSlimSaveAcks()`** (`State.slimSaveAcks`, 
 `package`, additive, no upstream symbol touched), which strips `encryptedValues` from the acknowledged
 copy while leaving the stored record and every system field alone.
 
-- **`SlimSaveAckMergeTests`** — four tests: `fullSaveAck_convergesOnTheLeadsWords` (the vacuity check —
-  the identical script under the full echo converges on the second writer's value),
-  `slimSaveAck_leavesTheAuthorsDeviceDivergedForGood` (the repro, plus the healed archive and the empty
-  pending set), `slimSaveAck_dropsTheNonNullColumnsOnly` (the mechanism: `title` dropped, NULL `priority`
-  applied, same round), `slimSaveAck_hitsARowThisDeviceOnlyUploaded` (the width). Guard, verified
-  2026-09-23: neutering the strip in `slimSaveAck(of:)` reddens exactly the three `slimSaveAck_*` tests on
-  their divergence assertions and leaves the control green.
-- **Limit of the evidence:** `refreshLastKnownServerRecord` only replaces the archive when the archived
-  record carries no `modificationDate` or an older one. The mock sets none, so the replacement is always
+- **`SlimSaveAckMergeTests`** — the four tests the diagnosis was made of. They were written asserting the
+  **divergence**; patch 18 flipped the three `slimSaveAck_*` ones to convergence and renamed them
+  accordingly (the control's name and script are unchanged). The divergence wording lives on in the file's
+  comments and in git history at `8e05d55`.
+- **Limit of the evidence:** `refreshLastKnownServerRecord` only rewrites the archive when the archived
+  record carries no `modificationDate` or an older one. The mock sets none, so the rewrite is always
   taken here. Against the real service a fresh save's ack carries a newer `modificationDate` than the
-  archive it replaces, so the same branch is taken — reasoning, not desk evidence, and the one place a
-  real-world narrowing of the trigger could hide.
+  archive it re-stamps, so the same branch is taken — reasoning, not desk evidence, and the one place a
+  real-world narrowing of the trigger could hide. ⚠️ Under patch 18 the branch **not** being taken is the
+  safe outcome (the archive keeps its values), where before the patch it was the harmful one.
 
 ### Test commits — patch 3 (no library behavior change)
 

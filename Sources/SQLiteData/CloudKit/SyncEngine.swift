@@ -44,6 +44,19 @@
     private let notificationsObserver = LockIsolated<(any NSObjectProtocol)?>(nil)
     private let activityCounts = LockIsolated(ActivityCounts())
     private let startTask = LockIsolated<Task<Void, Never>?>(nil)
+    /// MANGO PATCH 18 (F47) — the records currently in flight, by ID, as this device put them on the
+    /// wire.
+    ///
+    /// A save ack carries no encrypted custom fields, so it cannot say what the server now holds; the
+    /// record this device *sent* can, and this is the only place that knows it. Same shape and the same
+    /// reason as patch 15's `sentUserModificationTime`, one level up: that column carries the stamp, this
+    /// carries the values. In memory rather than a column because it is needed only between a batch and
+    /// its outcome, and because the fallback when it is missing (the last-known archive) is exactly
+    /// today's behavior — a lost entry costs a stale baseline, never a wrong one.
+    ///
+    /// Every outcome removes its entry (`handleSentRecordZoneChanges`, both the saved and the failed
+    /// buckets), so the map is bounded by what is genuinely in flight.
+    private let sentRecords = LockIsolated<[CKRecord.ID: CKRecord]>([:])
     #if DEBUG && canImport(DeveloperToolsSupport)
       private let previewTimerTask = LockIsolated<Task<Void, Never>?>(nil)
     #endif
@@ -436,6 +449,11 @@
           $0 = nil
         }
       #endif
+      // MANGO PATCH 18 (F47) — nothing this engine put on the wire can still be acknowledged once it
+      // has stopped, and a stopped engine is what a sign-out or a local wipe goes through. Keeping the
+      // entries would let a record ID reused by a later, different row inherit an archive of values
+      // that row never had. See `sentRecords`.
+      sentRecords.withValue { $0.removeAll() }
       observationRegistrar.withMutation(of: self, keyPath: \.isRunning) {
         syncEngines.withValue {
           $0 = SyncEngines()
@@ -1417,6 +1435,15 @@
       // it into the batch are recorded, in one write for the whole batch.
       if let batch {
         await recordSentUserModificationTimes(batch.recordsToSave)
+        // MANGO PATCH 18 (F47) — and keep the records themselves, for the same reason and the same
+        // window. See `sentRecords`.
+        // Copies, not the batch's own instances: what is archived must be what went out, and nothing
+        // downstream may edit it under us.
+        sentRecords.withValue { sentRecords in
+          for record in batch.recordsToSave {
+            sentRecords[record.recordID] = (record.copy() as? CKRecord) ?? record
+          }
+        }
       }
       return batch
     }
@@ -2029,7 +2056,20 @@
       syncEngine: any SyncEngineProtocol
     ) async {
       for savedRecord in savedRecords {
-        await refreshLastKnownServerRecord(savedRecord)
+        // MANGO PATCH 18 (F47) — a save ack only re-stamps the archive; it never replaces its values.
+        // The values come from the record this device sent, falling back to the archive itself.
+        await refreshLastKnownServerRecord(
+          savedRecord,
+          isSaveAcknowledgement: true,
+          sentRecord: sentRecords.withValue { $0[savedRecord.recordID] }
+        )
+      }
+      // MANGO PATCH 18 (F47) — settle the in-flight map on every outcome, ack or refusal, so it stays
+      // bounded by what is genuinely on the wire.
+      sentRecords.withValue { sentRecords in
+        for recordID in savedRecords.map(\.recordID) + failedRecordSaves.map(\.record.recordID) {
+          sentRecords[recordID] = nil
+        }
       }
       // MANGO PATCH 15 — settle what this batch had in flight. The move runs AFTER the refresh above
       // deliberately: when an ack DOES carry its encrypted fields (the mocked container, and whatever
@@ -2554,14 +2594,59 @@
       }
     }
 
-    private func refreshLastKnownServerRecord(_ record: CKRecord) async {
+    /// Archives `record` as this row's last known server record, if it is newer than what is archived.
+    ///
+    /// - Parameters:
+    ///   - record: the record to archive as the last known server record.
+    ///   - isSaveAcknowledgement: MANGO PATCH 18 (F47) — `record` came back from a *save*, not a fetch,
+    ///     so it is the server's receipt for what this device sent and **not** a full copy of the row.
+    ///     See ``CKRecord/mergingSaveAcknowledgement(_:)``.
+    ///   - sentRecord: MANGO PATCH 18 (F47) — the record this device put on the wire, when it is still
+    ///     known (`sentRecords`). It, not the archive, is what the server now holds.
+    private func refreshLastKnownServerRecord(
+      _ record: CKRecord,
+      isSaveAcknowledgement: Bool = false,
+      sentRecord: CKRecord? = nil
+    ) async {
       await withErrorReporting(.sqliteDataCloudKitFailure) {
         try await userDatabase.write { db in
           let metadata = try SyncMetadata.find(record.recordID).fetchOne(db)
+          // MANGO PATCH 18 (F47) — a real CloudKit save acknowledgement carries no encrypted custom
+          // fields (patch 7's F2 amendment records the same fact from the stamp's side). Archiving it
+          // wholesale left `_lastKnownServerRecordAllFields` EMPTY of values, and that archive is the
+          // baseline the next fetch's per-field merge reads (`upsertFromServerRecord` ->
+          // `CKRecord.update(with:row:columnNames:)`): a local column differing from the baseline is
+          // read as an unsent local edit and removed from the columns the incoming server record may
+          // write. Against an empty baseline EVERY non-NULL local column differs, so another writer's
+          // edit was dropped locally while it stood on the server — permanently and silently, because
+          // that same fetch healed the archive and re-enqueued nothing (MonteSprout 74.5 / 82.8; the
+          // repro is `SlimSaveAckMergeTests`).
+          //
+          // The record this device SENT is the true new server state; only the system fields (change
+          // tag, modification date) can come from the ack. So merge, never replace: the ack's system
+          // fields over the sent record's values, and any value the ack *does* carry still wins.
+          // Patch 15 ("the stamp the SENT record carried survives to its ack") is the precedent for
+          // carrying sent state to the ack site; it stays, for the archive-less first save, and its
+          // `max` leaves the stamp this merge now restores alone.
+          //
+          // ⚠️ The values MUST come from the sent record and not from the archive, and no desk test can
+          // show why: the batch builder's own `refreshLastKnownServerRecord` call above is **skipped**
+          // for any row whose archive already carries a `modificationDate` (the guard below answers
+          // "not newer" — the outgoing record is built FROM the archive and inherits its date). The
+          // mock never sets `modificationDate` on anything, so at the desk that call is always taken
+          // and the archive happens to hold the sent values; against the real service it is always
+          // skipped, and the archive holds the values of the last *fetch*. Merging those would archive
+          // a copy of the row the server no longer has and leave F47 standing in the field while every
+          // test here went green. The archive is the fallback only for the window the map cannot cover.
+          let recordToArchive =
+            isSaveAcknowledgement
+            ? (sentRecord ?? metadata?._lastKnownServerRecordAllFields)?
+              .mergingSaveAcknowledgement(record) ?? record
+            : record
           func updateLastKnownServerRecord() throws {
             try SyncMetadata
               .find(record.recordID)
-              .update { $0.setLastKnownServerRecord(record) }
+              .update { $0.setLastKnownServerRecord(recordToArchive) }
               .execute(db)
           }
 
