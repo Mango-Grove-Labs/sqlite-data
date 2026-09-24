@@ -381,6 +381,42 @@
     }
   }
 
+  extension CKRecord {
+    /// MANGO PATCH 18 (F47) — the record `self` describes, re-stamped with a save acknowledgement's
+    /// system fields.
+    ///
+    /// A real CloudKit save ack is a *receipt*, not a copy of the row: it carries the server's system
+    /// fields (record ID, change tag, modification date, parent, share reference) and **none of the
+    /// encrypted custom fields**. `self` — the archive written from the record this device actually
+    /// sent — is what the server now holds; only the system fields are news.
+    ///
+    /// So the result is the acknowledgement, with every value key it does not set filled in from `self`.
+    /// A value the ack *does* carry wins (a container that echoes saves in full, and CloudKit whenever
+    /// it chooses to echo, stay authoritative).
+    ///
+    /// The unencrypted half is deliberately narrow: only `CKAsset`s are back-filled, because assets are
+    /// the one value this library stores outside `encryptedValues` (`setAsset(_:forKey:at:)` — the
+    /// asset's hash and stamp live encrypted beside it). Everything else unencrypted is the record's own
+    /// system bookkeeping, including `_recordChangeTag`, which must stay the ack's: an older one would
+    /// claim an older server version.
+    func mergingSaveAcknowledgement(_ acknowledgement: CKRecord) -> CKRecord {
+      guard
+        acknowledgement.recordID == recordID,
+        let merged = acknowledgement.copy() as? CKRecord
+      else {
+        return acknowledgement
+      }
+      for key in encryptedValues.allKeys() where merged.encryptedValues[key] == nil {
+        merged.encryptedValues[key] = encryptedValues[key]
+      }
+      for key in allKeys() where merged[key] == nil {
+        guard let asset = self[key] as? CKAsset else { continue }
+        merged[key] = asset
+      }
+      return merged
+    }
+  }
+
   extension DataProtocol {
     fileprivate var sha256: Data {
       Data(SHA256.hash(data: self))
