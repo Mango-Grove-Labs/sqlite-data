@@ -371,6 +371,10 @@ the canonical form; the cherry-pick list remains the conflict map).
    resolves — it is what the suite actually runs against, and `ManifestBoundsTests` compares
    floors against exactly this file. Rejected: hand-keeping upstream's resolved byte-for-byte,
    which would divorce the tripwire from the tested graph.
+   *Addendum 2026-09-25:* the fork's toolchain moved to Swift 6.4 (Xcode 27), so the live manifest
+   is now `Package.swift` and the committed resolution followed it — `swift-issue-reporting` 2.1.0
+   is back in, `xctest-dynamic-overlay` out, matching the tag's own file. The rule is unchanged:
+   the lockfile tracks whatever toolchain the suite runs on, and moves when that moves.
 4. **Bounds moved WITH the base, per design (rebase step 5).** All three manifests (6.4 base +
    both fallbacks — new `Package@swift-6.1.swift` included, and on 6.1–6.3 toolchains that one is
    the LIVE manifest, not a fallback in the inert sense) carry `.upToNextMinor` floors equal to

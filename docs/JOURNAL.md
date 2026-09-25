@@ -433,3 +433,15 @@ branch switch cleared it). MANGO-PATCHES gains § 17, the cherry-pick entry (the
 patch 6's: taking upstream's case lists puts quota back in the bucket with no compile error) and a
 neutralize-in-place guard. Landed on `mango/patches-1.10`, cherry-picked onto `mango/patches-1.12`;
 consumer pins move through MangoSync 0.9.2 (MonteSprout 61.2).
+
+## 2026-09-25 — Lockfile follows the toolchain to Swift 6.4
+
+Upstream check: 1.12.0 is still the latest tag (upstream `main` is one README edit past it), so no
+retarget. The working tree's `Package.resolved` had drifted from the committed one: this machine
+now runs Swift 6.4 / Xcode 27, so `Package.swift` (tools 6.4) is the live manifest and SwiftPM pins
+`swift-issue-reporting` 2.1.0 (revision `71c7c9a7`, byte-identical to the tag's own pin) where the
+6.3.3-era commit pinned `xctest-dynamic-overlay` 1.13.1 via `Package@swift-6.1.swift`. Committed
+per DECISIONS § 1.12.0 retarget item 3 (the lockfile is toolchain-shaped and tracks the toolchain
+the suite runs on); `ManifestBoundsTests` green against the refreshed file, a second
+`swift package resolve` leaves it unchanged. Item 3 gained a dated addendum; MANGO-PATCHES' three
+"this fork's 6.1–6.3 toolchain" passages now date that state.

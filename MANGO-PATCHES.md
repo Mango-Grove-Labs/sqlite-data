@@ -135,7 +135,8 @@ retarget was the first one to exercise it. swift-tagged is the one exception to 
 resolution of this package; it is bounded at its own declared floor's minor, which pre-1.0 is the
 same conservative shape. xctest-dynamic-overlay gets the same treatment for the same reason on a
 6.4 toolchain (only the 6.1/6.0 fallback manifests declare it, so a 6.4 resolution never pins it);
-on this fork's own 6.1–6.3 toolchain it IS resolved, at 1.13.1, matching the bound's minor.
+on a 6.1–6.3 toolchain it IS resolved, at 1.13.1, matching the bound's minor (this fork built on
+6.3.3 until 2026-09-25; it now builds on 6.4, so the committed resolution no longer pins it).
 
 ⚠️ **Consequence, deliberately accepted: this fork now caps the minor of every shared Point-Free
 dependency in a consumer's graph.** Verified against a TCA-shaped graph (TCA `from: "1.0.0"` +
@@ -153,8 +154,8 @@ bump pins) — never a widened range in the app.
 2026-08-15 (it had declared `swift-structured-queries` as a bare `from:` for the whole 1.9 line —
 inert on the toolchains anything here builds with, but the identical hole, and nothing was watching
 it). The 1.12.0 base added `Package@swift-6.1.swift`, and that one is **not** inert: the live
-`Package.swift` now needs tools 6.4, so on the 6.1–6.3 toolchains this fork currently builds with,
-the 6.1 fallback is the manifest that actually resolves — it carries the full bound set, including
+`Package.swift` now needs tools 6.4, so on a 6.1–6.3 toolchain (this fork's own until 2026-09-25;
+it builds on 6.4 since) the 6.1 fallback is the manifest that actually resolves — it carries the full bound set, including
 `xctest-dynamic-overlay` (the pre-2.0 issue-reporting package the 6.1/6.0 manifests still use where
 the 6.4 manifest declares `swift-issue-reporting` 2.x). Step 5 of the rebase procedure checks all
 three manifests, and `ManifestBoundsTests` watches all three.
@@ -1245,7 +1246,8 @@ patch owns which region when a conflict does hit.
    is **toolchain-shaped**: re-resolving on a 6.1–6.3 toolchain swaps the tag's
    `swift-issue-reporting` pin for `xctest-dynamic-overlay` (and drops the 6.4-graph-only pins),
    which is expected — commit the resolution this fork's own toolchain produces, since that is what
-   the suite runs against.
+   the suite runs against, and re-commit it when the toolchain moves (2026-09-25: 6.3.3 → 6.4 put
+   the tag's `swift-issue-reporting` pin back; DECISIONS § 1.12.0 retarget, item 3 addendum).
 6. Full `swift test` green (known-intermittent issues aside), twice. "Green" means no unexplained
    failure — see 4b before writing one off.
 7. Push the branch; update consumers' `Package.swift` `revision:` pins in lockstep.

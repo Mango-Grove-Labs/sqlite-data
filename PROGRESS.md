@@ -3,7 +3,7 @@
 - **Project:** sqlite-data (Mango fork of pointfreeco/sqlite-data)
 - **Target milestone:** Open patch work done — **reached** (Phase 4 closed by patch 16; Phase 11's patch 17 landed on request); stop for review
 - **Status:** `milestone-reached` — every box on the roadmap is checked. Patches 1–17 sit on **`mango/patches-1.12`** (upstream 1.12.0; the 2026-09-02 `/mango-update` retarget) and on `mango/patches-1.10`, the adopted consumer base. Consumers still pin `mango/patches-1.10` revisions until their own coordinated `/mango-update` (sqlite-data pin + TCA ≥ 1.26 / IssueReporting 2.x together — see DECISIONS § 1.12.0 retarget).
-- **Updated:** 2026-09-17
+- **Updated:** 2026-09-25
 
 ---
 
