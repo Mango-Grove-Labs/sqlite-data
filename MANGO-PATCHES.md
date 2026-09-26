@@ -1015,6 +1015,66 @@ The patch:
 - ⚠️ **Not yet on `mango/patches-1.12`.** This landed on the consumer branch `mango/patches-1.10`, which
   is what MonteSprout pins; the 1.12 stack carries patches 1–17 only until someone retargets it.
 
+### 19. The resign-active send: each database on its own, each outcome recorded, and an expiration handler
+
+*MonteSprout Phase 91.1 — F55, a full-iCloud participant's note that sat `Pending 1` for 20+ minutes
+(the consumer's `docs/plans/2026-09-24-84.2-bench-results.md` § F55).*
+
+Upstream's `willResignActive` observer (in `SyncEngine.init`) awaited the **private** database's
+`sendChanges` and then the **shared** one's, in order, inside one throwing `Task`, under a background
+grant begun with **no expiration handler**. Three defects in one shape:
+
+- **One database's failure skipped the other.** If the private send threw — a full iCloud account, an
+  account mid-transition — the shared send was never made. A participant's notes live in somebody
+  else's zone, i.e. the **shared** database, so the database that matters to her was the one skipped.
+- **The error went nowhere.** A thrown error ended an unobserved `Task`: no report, no log, so a
+  consumer's health line read `Last error —` while the change sat pending (F55's exact reading).
+- **No expiration handler.** A send still running when the grant expired was never cancelled, and
+  the grant was not given back until the send returned — UIKit's termination condition.
+
+The patch:
+
+- **`ResignActiveSend.sendIndependently(_:logger:)`** (Mango-owned file
+  `CloudKit/Internal/ResignActiveSend.swift`, platform-neutral) sends each engine on its **own child
+  task of one task group** — concurrently, like upstream's public `sendChanges` already does with
+  `async let` — and returns one `Result` per database (`.sent` / `.failed(description)` /
+  `.cancelled`) in the order given. A `CancellationError` or `CKError.operationCancelled` is
+  `.cancelled`.
+- **Recorded:** every outcome is logged on the engine's `logger` (`sqlite-data resign-active send:
+  shared sent` / `… failed — <error>` / `… cancelled (background time expired)`), and each **failed**
+  database is reported once with `reportIssue(error, …)` — the error rides along, so a host reporter
+  keyed on the error's type (MangoSync's `SyncHealthReporter`) sees the code. A cancellation is never
+  reported: it is the expiration handler working.
+- **`ResignActiveBackgroundGrant`** (same file, UIKit only, `@MainActor`) begins the grant **with** an
+  expiration handler that cancels the send task and then ends the grant before returning; the send's
+  own completion ends it too, and the grant ends exactly once whichever comes first.
+- The observer itself shrinks to: read both engines, skip when neither exists, start the send task,
+  begin the grant, await, end.
+
+**Not changed:** what a send does per record (patches 2, 6, 17 still decide park vs. drop inside the
+batch); the engines are still read at notification time. Whether CKSyncEngine's `sendChanges` actually
+throws for a full account is **not known** — the patch removes the skip either way, and the new log
+line is how the next device run reads it.
+
+- **`ResignActiveSendTests`** (platform-neutral, a stub `SyncEngineProtocol`) —
+  `aFailedPrivateSend_stillSendsTheSharedDatabase` (the F55 shape: private throws quota, shared still
+  sends), `aHungPrivateSend_neverDelaysTheSharedDatabase` (the shared send goes out while the private
+  one is still in flight), `expiration_cancelsEverySendStillRunning` (both `.cancelled`, no report),
+  `aCloudKitCancellation_isACancellationNotAFailure`, `eachFailedDatabase_isReportedOnce_withItsError`.
+  The three upstream `AppLifecycleTests` (iOS only — `swift test` on the Mac skips them) pass on an
+  iOS simulator through the new observer (`flowdeck test -p . -s sqlite-data-Package -S <sim> --only
+  SQLiteDataTests/BaseCloudKitTests/AppLifecycleTests`, 2026-09-26).
+- **Guard (neutralize in place, verified 2026-09-26):** replace the task group with upstream's shape — a
+  `for` loop awaiting each engine in order, every later engine marked failed once one throws, no
+  `reportIssue`, no `operationCancelled` arm — and `swift test --filter ResignActiveSendTests` goes red
+  on 4 of 5 (8 issues), the two independence tests among them; `expiration_cancelsEverySendStillRunning`
+  stays green by design (a sequential loop cancels too). Restore → green.
+- **Fork suite 369 pass, 15 pre-existing known issues** (2026-09-26, macOS).
+- ⚠️ **Rebase note.** The only upstream-file hunk is the observer closure in `SyncEngine.init` (the
+  `#if os(iOS)` block); a conflict resolved by taking upstream's closure restores the sequential,
+  handler-less send **with no compile error**, and the Mac suite cannot see it (the observer is iOS-only)
+  — check that the closure still calls `ResignActiveSend.sendIndependently`.
+
 ### Characterization — what a "waiting to upload" count derived from `lastKnownServerRecord` cannot see
 
 *MonteSprout Phase 41.2a — no library change; a pinned fact consumers build on.*
@@ -1255,6 +1315,9 @@ patch owns which region when a conflict does hit.
    after the save loop, and the two private `CollapsedPark*` types; a conflict resolved by taking
    upstream's case lists puts `.quotaExceeded` back in the terminal bucket on both switches with no
    compile error — the same trap as patch 6's removed codes, check both lists)**,
+   **patch 19 (the Mango-owned `CloudKit/Internal/ResignActiveSend.swift` plus the one hunk in
+   `SyncEngine.init`'s iOS-only `willResignActive` observer; taking upstream's closure restores the
+   sequential, handler-less send with no compile error and no Mac test failure — check the call)**,
    the test
    commits (take them from the tip of the previous `mango/patches-*` branch). Resolve conflicts by **idiom, not line
    number** — the `SyncEngine` error-handling region drifts. Patch 3 conflicts every time, because the
@@ -1336,6 +1399,12 @@ patch owns which region when a conflict does hit.
      `quotaExceededSaves_reportOncePerZoneAndCodePerSend` for the save switch and on
      `quotaExceededDelete_isReEnqueuedForRetry` for the delete switch, while the six patch-6 tests
      stay green (they pin the neighbours); restore → green (verified 2026-09-17 by reverting both).
+   - Neutralize patch 19 in place (swap `ResignActiveSend.sendIndependently`'s task group for a
+     sequential loop that stops sending after the first throw) → `swift test --filter
+     ResignActiveSendTests` must go **red** on `aFailedPrivateSend_stillSendsTheSharedDatabase` and
+     `aHungPrivateSend_neverDelaysTheSharedDatabase`; restore → green (verified 2026-09-26). Then grep
+     that `SyncEngine.init`'s `willResignActive` observer still calls `sendIndependently` — the only
+     hunk in an upstream file, iOS-only, invisible to the Mac suite.
    - Neutralize patch 12 in place (delete the notify loop at the top of
      `handleFetchedDatabaseChanges`) → `swift test --filter ZonePurgeDelegateTests` must go **red** on
      `aSharedZonePurgeNotifiesTheDelegateBeforeDeletingLocalRows` (zero notices), while

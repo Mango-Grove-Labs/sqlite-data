@@ -445,3 +445,17 @@ per DECISIONS § 1.12.0 retarget item 3 (the lockfile is toolchain-shaped and tr
 the suite runs on); `ManifestBoundsTests` green against the refreshed file, a second
 `swift package resolve` leaves it unchanged. Item 3 gained a dated addendum; MANGO-PATCHES' three
 "this fork's 6.1–6.3 toolchain" passages now date that state.
+
+## 2026-09-26 — Phase 12.1: patch 19, the resign-active send (MonteSprout 91.1, F55)
+
+F55: a full-iCloud participant's shared-room note sat `Pending 1`, `Last error —`, for 20+ minutes on
+MonteSprout build 31. Upstream's `willResignActive` observer awaited the private send, then the shared
+one, in one throwing `Task` with no expiration handler — so a private throw skipped the shared database
+(where a participant's notes live), the error vanished, and an expiring grant was never cancelled.
+Patch 19 moves the send into the Mango-owned `Internal/ResignActiveSend.swift`: one child task per
+database, a `Result` per database (logged; a failure reported once with its error; a cancellation
+never), and a `@MainActor` grant wrapper whose expiration handler cancels and ends exactly once.
+`ResignActiveSendTests` (5) on a stub engine; neutralize-in-place reddens 4 of 5. 369 tests, zero
+failures, 15 known issues (macOS); the three iOS-only `AppLifecycleTests` pass on a simulator via
+`flowdeck test -p . -s sqlite-data-Package` — the first time this fork ran its iOS-only tests.
+Landed on `mango/patches-1.10`, cherry-picked onto `mango/patches-1.12`.

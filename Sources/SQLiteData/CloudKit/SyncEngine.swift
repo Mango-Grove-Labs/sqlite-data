@@ -301,15 +301,22 @@
             forName: UIApplication.willResignActiveNotification,
             object: nil,
             queue: nil
-          ) { [syncEngines] _ in
+          ) { [syncEngines, logger] _ in
+            // MANGO PATCH 19 (F55) — each database is sent independently (one's failure never skips
+            // the other), each outcome is recorded, and the background grant has an expiration
+            // handler that cancels the sends and gives the grant back. `Internal/ResignActiveSend`.
             _ = Task { @MainActor in
-              let taskIdentifier = UIApplication.shared.beginBackgroundTask()
-              defer { UIApplication.shared.endBackgroundTask(taskIdentifier) }
-              let (privateSyncEngine, sharedSyncEngine) = syncEngines.withValue {
-                ($0.private, $0.shared)
+              let engines = syncEngines.withValue {
+                [$0.private, $0.shared].compactMap { $0 }
               }
-              try await privateSyncEngine?.sendChanges(CKSyncEngine.SendChangesOptions())
-              try await sharedSyncEngine?.sendChanges(CKSyncEngine.SendChangesOptions())
+              guard !engines.isEmpty else { return }
+              let grant = ResignActiveBackgroundGrant()
+              let send = Task {
+                await ResignActiveSend.sendIndependently(engines, logger: logger)
+              }
+              grant.begin { send.cancel() }
+              _ = await send.value
+              grant.end()
             }
           }
         }
