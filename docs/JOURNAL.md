@@ -459,3 +459,14 @@ never), and a `@MainActor` grant wrapper whose expiration handler cancels and en
 failures, 15 known issues (macOS); the three iOS-only `AppLifecycleTests` pass on a simulator via
 `flowdeck test -p . -s sqlite-data-Package` — the first time this fork ran its iOS-only tests.
 Landed on `mango/patches-1.10`, cherry-picked onto `mango/patches-1.12`.
+
+## 2026-09-26 — Phase 13.1: patch 20, the transient-error report collapsed (MonteSprout 91.4)
+
+A dropped connection mid-send failed every record in the batch with the same transport code, and patch 2
+reported each one — N identical events in one millisecond. Patch 20 tallies the six wire codes
+(`networkFailure`, `networkUnavailable`, `serverResponseLost`, `serviceUnavailable`, `zoneBusy`,
+`requestRateLimited`) per (zone, code) in the save loop, reusing patch 17's key and tally, and reports once
+after it, still worded as a drop ("dropped N failed record save(s) with no retry on a transient error").
+Control flow unchanged. Two new `AuthTransitionRetryTests`, red on the pre-patch file; 387 tests, zero
+failures, 15 known issues (macOS). Landed on `mango/patches-1.12` only; consumers pick it up through
+MangoSync's lockstep pin.

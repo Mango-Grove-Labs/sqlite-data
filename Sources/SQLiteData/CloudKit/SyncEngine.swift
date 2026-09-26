@@ -2109,6 +2109,9 @@
       // 45 in a second). The tally is keyed like the report is worded, so a second zone (a shared
       // room's) or a second collapsed code ever added reads as its own episode, never merged.
       var collapsedParkedSaves: OrderedDictionary<CollapsedParkKey, CollapsedParkTally> = [:]
+      // MANGO PATCH 20 — the same collapse for the transient transport codes, which stay DROPPED (their
+      // control flow is upstream's); a separate tally because the report is worded as a drop, not a park.
+      var collapsedTransientDrops: OrderedDictionary<CollapsedParkKey, CollapsedParkTally> = [:]
       for (failedRecord, error) in failedRecordSaves {
         func clearServerRecord() async {
           await withErrorReporting(.sqliteDataCloudKitFailure) {
@@ -2314,14 +2317,29 @@
           .count(failedRecord.recordType)
           continue
 
-        case .networkFailure, .networkUnavailable, .zoneBusy, .serviceUnavailable,
-          .operationCancelled,
-          .internalError, .partialFailure, .badContainer, .requestRateLimited, .missingEntitlement,
+        // MANGO PATCH 20 — a transient transport error fails a whole batch at once, one record at a
+        // time: a dropped connection mid-send is N identical `networkFailure` reports in the same
+        // millisecond, one per record (MonteSprout 91.4). Same bucket and same control flow as the
+        // terminal case below (nothing re-enqueued here — unchanged from upstream); only the REPORT is
+        // collapsed, patch-17 style: one per (zone, code) per send, naming the count and the types.
+        // Scoped to the codes that describe the wire, not the record — a code that says something
+        // about THIS record (`.limitExceeded`, `.invalidArguments`, …) keeps its own report each.
+        case .networkFailure, .networkUnavailable, .serverResponseLost, .serviceUnavailable,
+          .zoneBusy, .requestRateLimited:
+          collapsedTransientDrops[
+            CollapsedParkKey(zoneID: failedRecord.recordID.zoneID, code: error.code),
+            default: CollapsedParkTally(error: error)
+          ]
+          .count(failedRecord.recordType)
+          continue
+
+        case .operationCancelled,
+          .internalError, .partialFailure, .badContainer, .missingEntitlement,
           .invalidArguments, .resultsTruncated, .assetFileNotFound,
           .assetFileModified, .incompatibleVersion, .constraintViolation, .changeTokenExpired,
           .badDatabase, .limitExceeded, .userDeletedZone, .tooManyParticipants,
           .alreadyShared, .managedAccountRestricted, .participantMayNeedVerification,
-          .serverResponseLost, .assetNotAvailable:
+          .assetNotAvailable:
           reportDroppedSave()
           continue
         #if canImport(FoundationModels)
@@ -2344,6 +2362,19 @@
           """
           sqlite-data sync: parked \(tally.total) failed record save(s) for retry until iCloud storage \
           frees — zone=\(key.zoneID.zoneName) ckError=\(key.code) (\(key.code.rawValue)) \
+          recordTypes=\(tally.recordTypesSummary)
+          """
+        )
+      }
+      // MANGO PATCH 20 — one report per transient episode. Keeps patch 2's "dropped … with no retry"
+      // wording (the control flow is patch 2's bucket, and a host that tells a drop from a park by the
+      // words must still read a drop), plus the count and the record types; the CKError rides along.
+      for (key, tally) in collapsedTransientDrops {
+        reportIssue(
+          tally.error,
+          """
+          sqlite-data sync: dropped \(tally.total) failed record save(s) with no retry on a transient \
+          error — zone=\(key.zoneID.zoneName) ckError=\(key.code) (\(key.code.rawValue)) \
           recordTypes=\(tally.recordTypesSummary)
           """
         )
@@ -3225,7 +3256,8 @@
   }
 
   // MANGO PATCH 17 — one collapsed park report per (zone, code) per send. The key is the identity
-  // of an episode as the report words it; the tally is what the one report says about it.
+  // of an episode as the report words it; the tally is what the one report says about it. Patch 20
+  // reuses both for its collapsed transient DROP reports (a separate map, a separate wording).
   private struct CollapsedParkKey: Hashable {
     let zoneID: CKRecordZone.ID
     let code: CKError.Code

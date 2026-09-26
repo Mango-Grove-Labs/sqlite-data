@@ -1075,6 +1075,40 @@ line is how the next device run reads it.
   handler-less send **with no compile error**, and the Mac suite cannot see it (the observer is iOS-only)
   — check that the closure still calls `ResignActiveSend.sendIndependently`.
 
+### 20. A transient transport error inside a batch reports once, not once per record
+
+*MonteSprout Phase 91.4 — the noise round.*
+
+A dropped connection mid-send fails every record in the batch with the same transport code, and patch
+2 reports each one: a 40-record batch on a flaky network is 40 identical `networkFailure` events in
+the same millisecond. Patch 20 collapses the **report** for the codes that describe the wire rather
+than the record — `.networkFailure`, `.networkUnavailable`, `.serverResponseLost`,
+`.serviceUnavailable`, `.zoneBusy`, `.requestRateLimited` — patch 17's way: tallied per
+`(zone, code)` in the save loop (a second `CollapsedParkKey`/`CollapsedParkTally` map,
+`collapsedTransientDrops`) and reported once **after** the loop:
+`sqlite-data sync: dropped 40 failed record save(s) with no retry on a transient error —
+zone=<zoneName> ckError=CKErrorCode(rawValue: 4) (4) recordTypes=observations×38,students×2`.
+
+**Not changed:** control flow. These codes stay in patch 2's dropped bucket — nothing is re-enqueued
+here, exactly as upstream (whether CKSyncEngine retries them on its own is its business, not this
+patch's). The wording keeps patch 2's "dropped … with no retry" so a host that tells a drop from a park
+by the words still reads a drop; the first failure's `CKError` rides along, so a reporter keyed on the
+error's type still sees the code. A code that says something about **this** record (`.limitExceeded`,
+`.invalidArguments`, `.operationCancelled`, …) keeps patch 2's one report per record.
+
+- **`AuthTransitionRetryTests`** — `networkFailureSaves_reportOncePerZoneAndCodePerSend` (three saves,
+  two types → one report naming `3`, `(4)` and `reminders×2,remindersLists×1`, nothing pending) and
+  `transientCollapse_keepsCodesApart_andLeavesRecordLevelCodesPerRecord` (two `networkFailure` + one
+  `serviceUnavailable` + two `limitExceeded` → 4 reports: one per transient code, one per record-level
+  failure).
+- **Guard (verified 2026-09-26):** restoring the pre-patch `SyncEngine.swift` (the six codes back in the
+  per-record case) sends both tests red; restore → green.
+- **Fork suite 387 pass, 15 pre-existing known issues** (2026-09-26, macOS).
+- ⚠️ **Rebase note.** A conflict resolved by taking upstream's case list puts the six codes back into
+  the per-record bucket **with no compile error** — the two tests above are the only witness.
+- Landed on `mango/patches-1.12` only (the adopted consumer base since MonteSprout's MangoSync 0.11
+  cascade); `mango/patches-1.10` does not carry it.
+
 ### Characterization — what a "waiting to upload" count derived from `lastKnownServerRecord` cannot see
 
 *MonteSprout Phase 41.2a — no library change; a pinned fact consumers build on.*

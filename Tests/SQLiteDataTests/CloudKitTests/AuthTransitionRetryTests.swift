@@ -29,6 +29,11 @@
   // `notAuthenticatedDelete_isReEnqueuedForRetry` RED (nothing is re-enqueued); reverting the patch-17
   // hunks sends `quotaExceededSave_isParked`, `quotaExceededSaves_reportOncePerZoneAndCodePerSend` and
   // `quotaExceededDelete_isReEnqueuedForRetry` RED. Restoring either → green.
+  //
+  // MANGO PATCH 20 (MonteSprout 91.4): a transient transport error's reports collapse the same way —
+  // control flow untouched, wording still a drop. Vacuity guard: moving the six transient codes back
+  // into the per-record `reportDroppedSave()` case sends both `…transient…`/`networkFailure…` tests
+  // RED (3 reports and 5 reports). Restoring → green.
   extension BaseCloudKitTests {
     @MainActor
     final class AuthTransitionRetryTests: BaseCloudKitTests, @unchecked Sendable {
@@ -150,6 +155,80 @@
         )
         #expect(
           reports.first?.message.contains("recordTypes=reminders×2,remindersLists×1") == true
+        )
+      }
+
+      /// Patch 20: a transient transport error inside a batch reports ONCE per (zone, code) per send,
+      /// naming the count and the types — never once per record. The control flow is untouched: the
+      /// saves stay in patch 2's dropped bucket (nothing re-enqueued), and the wording stays a drop.
+      @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
+      @Test func networkFailureSaves_reportOncePerZoneAndCodePerSend() async {
+        let recorder = RecordingIssueReporter()
+        await withIssueReporters([recorder]) {
+          await syncEngine.handleSentRecordZoneChanges(
+            failedRecordSaves: [
+              failedSave(.networkFailure, label: "save-net-1"),
+              failedSave(.networkFailure, label: "save-net-2"),
+              failedSave(.networkFailure, label: "save-net-3", recordType: RemindersList.tableName),
+            ],
+            syncEngine: syncEngine.private
+          )
+        }
+
+        syncEngine.private.state.assertPendingRecordZoneChanges([])
+        let reports = recorder.reports.value
+        #expect(reports.count == 1)
+        #expect(reports.first?.error?.code == .networkFailure)
+        #expect(
+          reports.first?.message.contains(
+            "dropped 3 failed record save(s) with no retry on a transient error"
+          ) == true
+        )
+        #expect(reports.first?.message.contains("(4)") == true)
+        #expect(
+          reports.first?.message.contains("recordTypes=reminders×2,remindersLists×1") == true
+        )
+      }
+
+      /// Patch 20's boundary: each transient code is its own episode, and a code that speaks about
+      /// the RECORD (`.limitExceeded`) keeps patch 2's one report per record — so two transient codes
+      /// plus two record-level failures are 2 + 2 reports, not 1 and not 5.
+      @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
+      @Test func transientCollapse_keepsCodesApart_andLeavesRecordLevelCodesPerRecord() async {
+        let recorder = RecordingIssueReporter()
+        await withIssueReporters([recorder]) {
+          await syncEngine.handleSentRecordZoneChanges(
+            failedRecordSaves: [
+              failedSave(.networkFailure, label: "save-mix-net-1"),
+              failedSave(.serviceUnavailable, label: "save-mix-svc"),
+              failedSave(.networkFailure, label: "save-mix-net-2"),
+              failedSave(.limitExceeded, label: "save-mix-limit-1"),
+              failedSave(.limitExceeded, label: "save-mix-limit-2"),
+            ],
+            syncEngine: syncEngine.private
+          )
+        }
+
+        syncEngine.private.state.assertPendingRecordZoneChanges([])
+        let reports = recorder.reports.value
+        #expect(reports.count == 4)
+        #expect(
+          reports.filter {
+            $0.message.contains("dropped a failed record save with no retry")
+              && $0.error?.code == .limitExceeded
+          }.count == 2
+        )
+        #expect(
+          reports.contains {
+            $0.message.contains("dropped 2 failed record save(s) with no retry on a transient error")
+              && $0.error?.code == .networkFailure
+          }
+        )
+        #expect(
+          reports.contains {
+            $0.message.contains("dropped 1 failed record save(s) with no retry on a transient error")
+              && $0.error?.code == .serviceUnavailable
+          }
         )
       }
 

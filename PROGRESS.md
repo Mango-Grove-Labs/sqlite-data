@@ -2,7 +2,7 @@
 
 - **Project:** sqlite-data (Mango fork of pointfreeco/sqlite-data)
 - **Target milestone:** Open patch work done — **reached** (Phase 4 closed by patch 16; Phase 11's patch 17 landed on request); stop for review
-- **Status:** `milestone-reached` — every box on the roadmap is checked. Patches 1–19 sit on **`mango/patches-1.12`** (upstream 1.12.0) and on `mango/patches-1.10`, the adopted consumer base. Consumers still pin `mango/patches-1.10` revisions until their own coordinated `/mango-update` (sqlite-data pin + TCA ≥ 1.26 / IssueReporting 2.x together — see DECISIONS § 1.12.0 retarget).
+- **Status:** `milestone-reached` — every box on the roadmap is checked. Patches 1–20 sit on **`mango/patches-1.12`** (upstream 1.12.0), the adopted consumer base since MonteSprout's MangoSync 0.11 cascade; `mango/patches-1.10` carries 1–19.
 - **Updated:** 2026-09-26
 
 ---
@@ -62,15 +62,17 @@
   - [x] 11.1 Patch 17 — `.quotaExceeded` parks for retry on both paths (patch 6's shape), one collapsed report per `(zone, code)` per send naming the count _(`MANGO-PATCHES.md` § 17)_
 - [x] **Phase 12 — The resign-active send (MonteSprout Phase 91.1, F55)** _(evidence: the consumer's `docs/plans/2026-09-24-84.2-bench-results.md` § F55)_
   - [x] 12.1 Patch 19 — each database sent independently with per-database outcomes, and an expiration handler _(`MANGO-PATCHES.md` § 19)_
+- [x] **Phase 13 — The noise round (MonteSprout Phase 91.4)**
+  - [x] 13.1 Patch 20 — a transient transport error inside a batch reports once per (zone, code) per send, control flow unchanged _(`MANGO-PATCHES.md` § 20)_
 
 ---
 
 ## Current Status
 
-- **Current phase / sub-phase:** none in flight — Phase 12 complete (patch 19), the "Open patch work done" milestone still reached
+- **Current phase / sub-phase:** none in flight — Phase 13 complete (patch 20), the "Open patch work done" milestone still reached
 - **State:** milestone-reached
-- **Last completed:** 12.1 — patch 19 (F55). The `willResignActive` send no longer awaits private-then-shared in one throwing task: `ResignActiveSend.sendIndependently` sends each database on its own child task, logs and records each outcome (a failure is reported once with its error; a cancellation never), and the background grant now has an expiration handler that cancels the sends and ends the grant exactly once. Guards: `ResignActiveSendTests` (5), neutralize-in-place verified; the upstream `AppLifecycleTests` pass on an iOS simulator. Landed on `mango/patches-1.10` (the consumer base) and cherry-picked onto `-1.12`.
-- **Build:** green · **Tests:** green — **369 tests, ZERO failures, 15 known issues** on `mango/patches-1.10` (2026-09-26, macOS; re-run on `-1.12` after the cherry-pick) + the iOS `AppLifecycleTests` (3) on a simulator · **Simulator-verified:** the lifecycle tests only
+- **Last completed:** 13.1 — patch 20 (MonteSprout 91.4). The six transport codes (`networkFailure`, `networkUnavailable`, `serverResponseLost`, `serviceUnavailable`, `zoneBusy`, `requestRateLimited`) stay in patch 2's dropped bucket but report once per (zone, code) per send, naming the count and record types. Two tests in `AuthTransitionRetryTests`, red without the patch. Landed on `mango/patches-1.12` only.
+- **Build:** green · **Tests:** green — **387 tests, ZERO failures, 15 known issues** on `mango/patches-1.12` (2026-09-26, macOS) · **Simulator-verified:** no (the patch touches no iOS-only code)
 - ⚠ **The resign-active observer is iOS-only — the Mac `swift test` never compiles or runs it.** Any change there needs `flowdeck test -p . -s sqlite-data-Package -S <sim> --only SQLiteDataTests/BaseCloudKitTests/AppLifecycleTests` (MANGO-PATCHES § 19).
 - ⚠ **The fork now caps the minor of every shared Point-Free dependency in a consumer's graph.** Nothing fails to resolve (TCA's own floors sit far below these bounds — verified against a TCA-shaped scratch graph), but the bounds move WITH the base at each retarget: on the 1.12 base swift-dependencies is bounded at 1.17.x (the 1.10-era "held at 1.14.x downgrade" note is obsolete — MonteSproutKit's 1.16.0 now moves UP). Intended trade — loud at `/mango-update` time beats silent in the field. If a consumer genuinely needs a newer minor, retarget here; never widen the range app-side.
 - ⚠ **A full account now reports once per zone per retry window, indefinitely** (patch 17): the rate is one event per `CKRetryAfter` window while the account stays full, not one per record — that is the signal a consumer's "still full" reading is built on, and naming the cause on screen is the consumer's job (MonteSprout 61.3), not the library's.
