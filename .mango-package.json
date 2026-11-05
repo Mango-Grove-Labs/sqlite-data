@@ -1,5 +1,6 @@
 {
   "tier": "optional",
   "kind": "fork",
+  "langs": ["swift"],
   "summary": "Mango fork of pointfreeco/sqlite-data — consumers pin a revision on the patch-stack branch mango/patches-<ver> (upstream tag + MANGO-PATCHES.md); never adopted directly"
 }
