@@ -23,6 +23,17 @@
       /// per database (`enableSlimSaveAcks()`), never on by default: every existing test is written against
       /// the echo.
       package var slimSaveAcks = false
+      /// MANGO PATCH 21 (MonteSprout Phase 120.1) — answer an insert of a record that already exists
+      /// the way the real service is assumed to.
+      ///
+      /// A record saved with **no change tag** while one with its ID is already stored is refused here
+      /// with `.serverRejectedRequest`. Real CloudKit is assumed to answer `.serverRecordChanged`
+      /// carrying the server's copy (the `.ifServerRecordUnchanged` policy's conflict) — the answer a
+      /// first save gets when it is re-sent after it landed with its reply lost. Which of the two the
+      /// service really gives is a hardware read; this option lets a test drive the assumed one. Opt in
+      /// per database (`enableInsertConflictsAsServerRecordChanged()`), never on by default: every
+      /// existing test is written against the rejection.
+      package var insertConflictsAsServerRecordChanged = false
       var assets: [AssetID: Data] = [:]
       var deletedRecords: [(CKRecord.ID, CKRecord.RecordType)] = []
       mutating func nextRecordChangeTag() -> Int {
@@ -52,6 +63,11 @@
     /// MANGO (MonteSprout Phase 82.8, F47) — see `State.slimSaveAcks`.
     package func enableSlimSaveAcks() {
       state.withValue { $0.slimSaveAcks = true }
+    }
+
+    /// MANGO PATCH 21 — see `State.insertConflictsAsServerRecordChanged`.
+    package func enableInsertConflictsAsServerRecordChanged() {
+      state.withValue { $0.insertConflictsAsServerRecordChanged = true }
     }
 
     /// MANGO (MonteSprout Phase 82.8, F47) — a save acknowledgement with the encrypted custom fields
@@ -275,7 +291,10 @@
               // giving it a new identity, rather than leveraging an existing CKRecord.
               saveResults[recordToSave.recordID] = .failure(
                 CKError(
-                  .serverRejectedRequest,
+                  // MANGO PATCH 21 — see `State.insertConflictsAsServerRecordChanged`.
+                  state.insertConflictsAsServerRecordChanged
+                    ? .serverRecordChanged
+                    : .serverRejectedRequest,
                   userInfo: [
                     CKRecordChangedErrorServerRecordKey: existingRecord.copy() as Any,
                     CKRecordChangedErrorClientRecordKey: recordToSave.copy(),

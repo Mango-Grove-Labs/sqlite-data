@@ -1428,7 +1428,8 @@
             with: T(queryOutput: row),
             userModificationTime: metadata.userModificationTime
           )
-          await refreshLastKnownServerRecord(record)
+          // MANGO PATCH 21 — building a batch confirms nothing. See `isBatchBuild`.
+          await refreshLastKnownServerRecord(record, isBatchBuild: true)
           sentRecord = recordID
           return record
         }
@@ -2641,14 +2642,50 @@
     ///     See ``CKRecord/mergingSaveAcknowledgement(_:)``.
     ///   - sentRecord: MANGO PATCH 18 (F47) — the record this device put on the wire, when it is still
     ///     known (`sentRecords`). It, not the archive, is what the server now holds.
+    ///   - isBatchBuild: MANGO PATCH 21 — `record` is an OUTGOING record the batch builder is about to
+    ///     hand to CloudKit; nothing has gone over the wire. For a row with no confirmed server copy
+    ///     (`lastKnownServerRecord` NULL) it is written to `_lastKnownServerRecordAllFields` ONLY.
     private func refreshLastKnownServerRecord(
       _ record: CKRecord,
       isSaveAcknowledgement: Bool = false,
-      sentRecord: CKRecord? = nil
+      sentRecord: CKRecord? = nil,
+      isBatchBuild: Bool = false
     ) async {
       await withErrorReporting(.sqliteDataCloudKitFailure) {
         try await userDatabase.write { db in
           let metadata = try SyncMetadata.find(record.recordID).fetchOne(db)
+          // MANGO PATCH 21 — a row is confirmed by an ack (or a fetch), never by a batch build.
+          //
+          // Upstream archived the outgoing record of a never-uploaded row right here, through
+          // `setLastKnownServerRecord`, which set `lastKnownServerRecord` (so `hasLastKnownServerRecord`
+          // read 1) and levelled patch 7's mirror from the stamp the outgoing record carries — before
+          // a byte had left the device. A first save then refused with any code that does not clear
+          // the server record (the terminal bucket, patch 20's transient bucket, and the PARKED codes
+          // while they wait) left a row that every "is it uploaded?" reading took as uploaded: the
+          // never-confirmed counts, patch 9's start rescan (neither half selects it) and a consumer's
+          // upload proof. With the 5.3b ledger row cleared by the failure outcome, nothing would ever
+          // send it again (MonteSprout bug bash 2026-11-25, A-F1).
+          //
+          // So for a row with no confirmed server copy the batch build writes the VALUES BASELINE only
+          // and leaves `lastKnownServerRecord`, `hasLastKnownServerRecord` and
+          // `serverUserModificationTime` for the ack or a fetch to set. Read under this write
+          // transaction, not from the provider's earlier read: an ack can land between the two.
+          //
+          // ⚠️ The baseline MUST still be written. `upsertFromServerRecord` skips its per-field merge
+          // when `_lastKnownServerRecordAllFields` is NULL, so a first save that LANDED but whose reply
+          // was lost (a kill between send and ack) would come back as a conflict with no merge, and an
+          // edit made in between would be overwritten by the older server copy — here and, once that
+          // copy is re-uploaded, on every device. It is also what patch 18's ack falls back to after a
+          // relaunch. "`_lastKnownServerRecordAllFields` set with `lastKnownServerRecord` NULL" now
+          // means exactly: sent, not confirmed.
+          if isBatchBuild, let metadata, metadata.lastKnownServerRecord == nil {
+            let sentBaseline: CKRecord? = record
+            try SyncMetadata
+              .find(record.recordID)
+              .update { $0._lastKnownServerRecordAllFields = #bind(sentBaseline) }
+              .execute(db)
+            return
+          }
           // MANGO PATCH 18 (F47) — a real CloudKit save acknowledgement carries no encrypted custom
           // fields (patch 7's F2 amendment records the same fact from the stamp's side). Archiving it
           // wholesale left `_lastKnownServerRecordAllFields` EMPTY of values, and that archive is the

@@ -470,3 +470,20 @@ after it, still worded as a drop ("dropped N failed record save(s) with no retry
 Control flow unchanged. Two new `AuthTransitionRetryTests`, red on the pre-patch file; 387 tests, zero
 failures, 15 known issues (macOS). Landed on `mango/patches-1.12` only; consumers pick it up through
 MangoSync's lockstep pin.
+
+## 2026-11-25 — Phase 14.1: patch 21, a row is confirmed by an ack (MonteSprout 120.1, A-F1)
+
+MonteSprout's second bug bash read the batch builder and found that it archived the OUTGOING record of a
+never-uploaded row through `setLastKnownServerRecord` — `hasLastKnownServerRecord` = 1 and a level mirror
+before anything was sent — so a first save refused with a code that does not clear the server record read
+as uploaded to every probe, and for the dropped codes was never sent again. Patch 21 adds `isBatchBuild:`
+to `refreshLastKnownServerRecord`: for a row whose `lastKnownServerRecord` is NULL the batch build writes
+`_lastKnownServerRecordAllFields` only (the values baseline the conflict merge and patch 18's fallback
+read) and leaves confirmation to the ack or a fetch. Confirmed rows are untouched; nothing on the wire
+changes. The mock gained `enableInsertConflictsAsServerRecordChanged()` (default off) so the lost-reply
+window can be driven with the answer real CloudKit is assumed to give. `BatchBuildConfirmationTests` (4):
+both guards verified by neutralizing in place — unreachable early return reddens the refusal tests, a
+dropped baseline write reddens both crash-window tests. 391 tests, zero failures, 15 known issues
+(macOS); no snapshot re-recorded. Gotcha: an orphan 5.3b ledger row would re-enqueue the row at start and
+make the restart test pass without the patch — the test waits the ledger to zero before the stop.
+Landed on `mango/patches-1.12` only; not pinned until MonteSprout 120.7.

@@ -2,8 +2,8 @@
 
 - **Project:** sqlite-data (Mango fork of pointfreeco/sqlite-data)
 - **Target milestone:** Open patch work done — **reached** (Phase 4 closed by patch 16; Phase 11's patch 17 landed on request); stop for review
-- **Status:** `milestone-reached` — every box on the roadmap is checked. Patches 1–20 sit on **`mango/patches-1.12`** (upstream 1.12.0), the adopted consumer base since MonteSprout's MangoSync 0.11 cascade; `mango/patches-1.10` carries 1–19.
-- **Updated:** 2026-09-26
+- **Status:** `in-progress` — Phase 14 (MonteSprout Phase 120's fork patches 21–25) is open; 14.1 (patch 21) landed. Patches 1–21 sit on **`mango/patches-1.12`** (upstream 1.12.0), the adopted consumer base since MonteSprout's MangoSync 0.11 cascade; `mango/patches-1.10` carries 1–19.
+- **Updated:** 2026-11-25
 
 ---
 
@@ -64,15 +64,23 @@
   - [x] 12.1 Patch 19 — each database sent independently with per-database outcomes, and an expiration handler _(`MANGO-PATCHES.md` § 19)_
 - [x] **Phase 13 — The noise round (MonteSprout Phase 91.4)**
   - [x] 13.1 Patch 20 — a transient transport error inside a batch reports once per (zone, code) per send, control flow unchanged _(`MANGO-PATCHES.md` § 20)_
+- [ ] **Phase 14 — The second bug bash's fork patches (MonteSprout Phase 120)** _(evidence: the consumer's `docs/research/2026-11-25-bug-bash/A-sqlite-data-sync-engine.md`; each box's spec: the consumer's `docs/ROADMAP.md` § 120, driven from that repo's roadmap; pushed per box, pinned once by the consumer's 120.7)_
+  - [x] 14.1 Patch 21 — a row is confirmed by an ack, never by a batch build; the batch writes the values baseline only (A-F1) _(`MANGO-PATCHES.md` § 21)_
+  - [ ] 14.2 Patch 22 — a share's cache always resolves: a failed cache is parked and retried, the metadata fetch resumes once and times out (A-F2, A-F3; consumer box 120.2)
+  - [ ] 14.3 Patch 23 — share and unshare keep the merge baseline (A-F4; consumer box 120.4)
+  - [ ] 14.4 Patch 24 — a local edit is stamped after everything this device has seen (A-F5; consumer box 120.5)
+  - [ ] 14.5 Patch 25 — three small ones: the retry drain asks each record's own database, upstream #571, the schema backfill skips deleted rows (A-F6–A-F8; consumer box 120.6)
 
 ---
 
 ## Current Status
 
-- **Current phase / sub-phase:** none in flight — Phase 13 complete (patch 20), the "Open patch work done" milestone still reached
-- **State:** milestone-reached
-- **Last completed:** 13.1 — patch 20 (MonteSprout 91.4). The six transport codes (`networkFailure`, `networkUnavailable`, `serverResponseLost`, `serviceUnavailable`, `zoneBusy`, `requestRateLimited`) stay in patch 2's dropped bucket but report once per (zone, code) per send, naming the count and record types. Two tests in `AuthTransitionRetryTests`, red without the patch. Landed on `mango/patches-1.12` only.
-- **Build:** green · **Tests:** green — **387 tests, ZERO failures, 15 known issues** on `mango/patches-1.12` (2026-09-26, macOS) · **Simulator-verified:** no (the patch touches no iOS-only code)
+- **Current phase / sub-phase:** Phase 14 (the second bug bash's fork patches) — 14.1 done, 14.2 next
+- **State:** in-progress
+- **Last completed:** 14.1 — patch 21 (MonteSprout 120.1). For a row with no confirmed server copy the batch build writes `_lastKnownServerRecordAllFields` only; `lastKnownServerRecord`, `hasLastKnownServerRecord` and the mirror are first set by an ack or a fetch. Four tests in `BatchBuildConfirmationTests`, both guards verified by neutralizing in place; the mock gained `enableInsertConflictsAsServerRecordChanged()`. No snapshot re-recorded.
+- **Build:** green · **Tests:** green — **391 tests, ZERO failures, 15 known issues** on `mango/patches-1.12` (2026-11-25, macOS) · **Simulator-verified:** no (the patch touches no iOS-only code)
+- ⚠ **A never-confirmed row dropped with a permanent code is re-sent at every launch** (patch 21 + patch 9): the trade against a refused first save reading as uploaded. And between a batch build and its ack a new row reads unconfirmed — a consumer's never-confirmed count stays above zero through a full-iCloud episode.
+- ⚠ **Patch 21's lost-reply window rests on an assumption the mock cannot check:** that real CloudKit answers a tagless save of an existing record with `.serverRecordChanged` (MANGO-PATCHES § 21). The consumer reads it on hardware at its next pin-class cut.
 - ⚠ **The resign-active observer is iOS-only — the Mac `swift test` never compiles or runs it.** Any change there needs `flowdeck test -p . -s sqlite-data-Package -S <sim> --only SQLiteDataTests/BaseCloudKitTests/AppLifecycleTests` (MANGO-PATCHES § 19).
 - ⚠ **The fork now caps the minor of every shared Point-Free dependency in a consumer's graph.** Nothing fails to resolve (TCA's own floors sit far below these bounds — verified against a TCA-shaped scratch graph), but the bounds move WITH the base at each retarget: on the 1.12 base swift-dependencies is bounded at 1.17.x (the 1.10-era "held at 1.14.x downgrade" note is obsolete — MonteSproutKit's 1.16.0 now moves UP). Intended trade — loud at `/mango-update` time beats silent in the field. If a consumer genuinely needs a newer minor, retarget here; never widen the range app-side.
 - ⚠ **A full account now reports once per zone per retry window, indefinitely** (patch 17): the rate is one event per `CKRetryAfter` window while the account stays full, not one per record — that is the signal a consumer's "still full" reading is built on, and naming the cause on screen is the consumer's job (MonteSprout 61.3), not the library's.
@@ -85,18 +93,13 @@
 
 ## Next Concrete Action
 
-> **Stop for review — the roadmap holds no unchecked work.** The 1.12.0 retarget is done here
-> (2026-09-02); the next concrete action lives in the CONSUMER repos: a coordinated `/mango-update`
-> that moves the sqlite-data pin onto `mango/patches-1.12` (MangoSync's declared `revision:` first,
-> apps in lockstep after) **together with** the TCA ≥ 1.26 / IssueReporting 2.x generation bump —
-> the 1.10-based pin and new-generation TCA cannot coexist in one graph (DECISIONS § 1.12.0
-> retarget). The one standing debt here, if you
-> want work without a trigger: **rewrite the five rotted vacuity guards** (patches 1, 5, 6, 7, 9) in
-> the neutralize-in-place style — `MANGO-PATCHES.md` § Guard executability.
+> **14.2 — patch 22 (a share's cache always resolves).** First step: read the consumer's
+> `docs/ROADMAP.md` § 120 (box 120.2) and A-F2 / A-F3 in its bug-bash sweep, then `cacheShare` and
+> `CKContainer.shareMetadata` (`Internal/CloudContainer.swift`). Phase 14 is driven from MonteSprout's
+> roadmap (its `/pilot 119 and 120`); each box is pushed here and pinned once by its 120.7.
 >
-> ⚠ Patches 15, 16 and 17 are **inert for MonteSprout until it bumps its pin** (still `d84eeaa`,
-> the patch-14 tip) — that bump is `/mango-update`'s job in that repo (its 61.2, through MangoSync
-> 0.9.2), never a side effect of work here.
+> ⚠ Patch 21 is **inert for MonteSprout until its 120.7 moves the pin** (still `a103a08`, the
+> patch-20 tip).
 >
 > **Settled 2026-08-16: the consumer base is `mango/patches-1.10` @ `e18249a`** — decided by action
 > (MangoSync 0.7.2 pins it, every Mango app bumped in lockstep to the same revision and SSH URL, per
@@ -112,7 +115,6 @@
 
 ## Open Decisions (reversible — defaults chosen, proceeding)
 
-- **Upstream 1.10.0's stale `triggers()` snapshot** → chose **take only #522's two `TriggerTests` lines, not the whole commit; drop at the first tag containing #522** → DECISIONS.md § 2026-08-15 — 1.10.0 retarget. **Closed 2026-09-02:** the 1.12.0 retarget retired the carry as planned (1.11.0 ships #522)
 - **How a retarget proves no patch was dropped, now that 5 of 9 guards have rotted** → chose **the byte-identity check on `Sources/SQLiteData/CloudKit/` is load-bearing; rewriting the rotted guards stays owed** → DECISIONS.md § 2026-08-15 — 1.10.0 retarget
 
 ---

@@ -354,6 +354,12 @@ Two properties make the mirror trustworthy rather than another thing to drift:
   single insert in `upsertFromServerRecord`), so both are set in the same statement — including the
   **clearing** case, where a nil record nils the mirror rather than leaving a stamp that would read as "in
   sync" with a server copy that no longer exists.
+  **Restated by patch 21:** the funnel is for `lastKnownServerRecord` — the *confirmation*. Its values
+  twin `_lastKnownServerRecordAllFields` has one writer outside it, the batch build's baseline for a row
+  with no confirmed server copy (§ 21). So `_lastKnownServerRecordAllFields` set with
+  `lastKnownServerRecord` NULL reads **sent, not confirmed**; the mirror stays NULL there, and
+  `lastKnownServerRecord`, `hasLastKnownServerRecord` and `serverUserModificationTime` are first set by
+  an ack or a fetch, never by building a batch.
 - **A new migration, never an edit to the released one** — the DEBUG `hasSchemaChanges` assertion exists to
   enforce exactly that. `"Mango: mirror the server userModificationTime"` adds the column and backfills
   `= userModificationTime` for rows that already have a server record. That backfill **assumes those rows are
@@ -823,6 +829,9 @@ they inject an ack with no batch build; their comments say so.
   reaches the behind-mirror state through a **fetch that lands while the save is in flight** (patch
   14's carried stamp puts the older server copy's stamp back in the mirror) rather than through the
   field's own ordering. Same state, reached by real code paths; do not "simplify" that fetch away.
+  **Corrected by patch 21:** "only in the mock" held for a *confirmed* row. For a never-uploaded row
+  the real path took the same branch (an archive that does not exist has no `modificationDate`), which
+  is the defect § 21 fixes.
 - **Guards, verified 2026-08-23 in the 5.3a style — neutralize the mechanism in place, never revert
   the commit.** Dropping the batch-build call reddens the inversion and the invariant test and only
   those; emptying the ack-side move's ID list reddens the same two; emptying the failure clear's list
@@ -1109,6 +1118,101 @@ error's type still sees the code. A code that says something about **this** reco
 - Landed on `mango/patches-1.12` only (the adopted consumer base since MonteSprout's MangoSync 0.11
   cascade); `mango/patches-1.10` does not carry it.
 
+### 21. A row is confirmed by an ack, never by a batch build
+
+*MonteSprout Phase 120.1 — the 2026-11-25 bug bash's A-F1 (the consumer's
+`docs/research/2026-11-25-bug-bash/A-sqlite-data-sync-engine.md`). Found by reading, not in the field
+— but it is the unnamed cause behind 61.x's "`Pending 0` is true under the failure", and the same
+family as the 1.0(12) outage: a record leaves the queue while every health line says "ok".*
+
+The batch builder (`nextRecordZoneChangeBatch`'s record provider) called
+`refreshLastKnownServerRecord(record)` on each OUTGOING record before returning it. That function's
+"is this newer than what I have?" guard takes its `else` branch whenever the archive has no
+`modificationDate` — which is always true for a row that has never reached the server, because there
+is no archive. So for a brand-new row, **building the batch** ran `setLastKnownServerRecord`:
+`lastKnownServerRecord` = the local outgoing record, `hasLastKnownServerRecord` = 1, and patch 7's
+mirror levelled from the stamp that record carries. Nothing had gone over the wire.
+
+A first save then refused with any code that does not call `clearServerRecord()` kept the invented
+server record: the terminal bucket (`.internalError`, `.limitExceeded`, `.invalidArguments`,
+`.operationCancelled`, …), patch 20's transient bucket, `.serverRecordChanged` with no server record,
+and the **parked** codes (`.quotaExceeded`, `.notAuthenticated`) for as long as they wait. Every
+"is it uploaded?" reading took the row as uploaded — a consumer's never-confirmed count, patch 9's
+start rescan (neither half selects it: confirmed, mirror level) and whatever upload proof is built on
+those. For the dropped codes the 5.3b ledger row is resolved by the failure outcome too, so nothing
+anywhere would ever send the row again; it healed only if the user edited it.
+
+The patch, in `refreshLastKnownServerRecord` behind a new `isBatchBuild:` flag (the batch builder is
+its only `true` caller):
+
+- **For a row whose `lastKnownServerRecord` is NULL, the batch build writes the outgoing record to
+  `_lastKnownServerRecordAllFields` only** and returns. It does not call `setLastKnownServerRecord`.
+  `lastKnownServerRecord`, `hasLastKnownServerRecord` and `serverUserModificationTime` are first set
+  by the ack (`handleSentRecordZoneChanges`, unchanged — it already archives a first save through
+  patch 18's merge) or by a fetch (`upsertFromServerRecord`, unchanged).
+- **The NULL test is read inside the write transaction**, not from the provider's earlier metadata
+  read — an ack can land between the two.
+- **A confirmed row keeps today's behaviour** (the date-guarded refresh), so nothing changes for an
+  edit to an uploaded row, and no existing snapshot moved.
+- **Nothing on the wire changes** — the outgoing record is byte-for-byte what it was — so a patched
+  device and an unpatched one in the same zone cannot disagree or loop.
+
+⚠️ **The baseline must stay; only the confirmation moves.** The first form of this fix skipped the
+batch-build write altogether and was corrected in plan review. `upsertFromServerRecord` skips its
+per-field merge when `_lastKnownServerRecordAllFields` is NULL, so a first save that **landed** but
+whose reply was lost (a kill between send and ack) would come back — as the conflict answer to the
+tagless re-send, or as a plain fetch — with no merge, and an edit made in between would be overwritten
+by the older server copy locally and then re-uploaded over itself, i.e. lost on every device. It is
+also what patch 18's ack falls back to when `sentRecords` is empty (a relaunch between send and ack),
+and what the next batch build builds the outgoing record on.
+
+**The invariant, restated (see § 7):** `_lastKnownServerRecordAllFields` set with
+`lastKnownServerRecord` NULL = *sent, not confirmed*.
+
+**What a consumer sees change.** Between a batch build and its ack — normally well under a second —
+a new row now reads unconfirmed, where it used to read confirmed. During a full-iCloud episode
+(patch 17) the parked rows read unconfirmed until their saves land, so a never-confirmed count stays
+above zero for the whole episode: correct, and a change to how earlier snapshots of that state were
+read. A row dropped with a permanent code is selected by patch 9's rescan and re-sent **at every
+launch** — the deliberate trade against the silent drop, the same accepted shape as patches 1 and 8;
+a cap is the consumer's policy call. A row deleted locally between its batch build and its ack routes
+its delete by the root's last-known record (the trigger's `rootServerRecord` fallback), exactly as a
+never-sent row always has.
+
+- **The mock gains `enableInsertConflictsAsServerRecordChanged()`** (per database, default off). A save
+  with no change tag of a record that already exists is refused by the mock with
+  `.serverRejectedRequest`; the real service is **assumed** to answer `.serverRecordChanged` with its
+  copy. The option makes the mock give the assumed answer. ⚠️ Which answer real CloudKit gives is a
+  **hardware read** (the consumer's next pin-class cut) — if it is `.serverRejectedRequest`, the
+  engine's existing handler drops the save and clears the server record *and the baseline*, and the
+  lost-reply window needs its own patch.
+- **`BatchBuildConfirmationTests`** — every test builds a batch first, through the entry point
+  CKSyncEngine calls; no earlier suite did that for a never-uploaded row
+  (`DroppedSaveReportingTests` / `AuthTransitionRetryTests` inject a failure with no batch build,
+  `EngineStartRescanTests` kills the change before the batch is built), which is why this stayed
+  invisible at the desk. `aRefusedFirstSave_staysUnconfirmed_andARestartLandsIt` (`.internalError`:
+  unconfirmed on every reading, ledger empty, then stop/start lands it),
+  `aParkedFirstSave_readsUnconfirmedUntilItsAck` (`.quotaExceeded`),
+  `aLandedSaveWithALostReply_keepsALaterEdit_andDeliversIt` (the crash window: batch, the sent record
+  placed in the mock store, stop, edit, start, send) and
+  `aLandedSaveWithALostReply_isConfirmedByAFetch_andKeepsALaterEdit` (the same window with the fetch
+  arriving first — a fetch confirms too).
+- **Guards (neutralize in place, verified 2026-11-25):** make the `isBatchBuild` early return
+  unreachable → the two refusal tests go red on every unconfirmed reading and the send-first
+  crash-window test on its unconfirmed precondition; the fetch-first one stays green. Keep the return
+  but drop its baseline write (the no-baseline form) → both crash-window tests go red on her edit,
+  the refusal tests on their `hasBaseline` pin alone. Restore → green.
+- **Fork suite 391 pass, 15 pre-existing known issues** (2026-11-25, macOS). **No snapshot was
+  re-recorded** — the patch adds no column, and no existing test dumps a never-confirmed row between
+  its batch build and its outcome.
+- ⚠️ **Rebase note.** Two hunks in `SyncEngine.swift`: the `isBatchBuild: true` argument at the batch
+  builder's call, and the early return at the top of `refreshLastKnownServerRecord`'s write. A conflict
+  resolved by taking upstream's bare `refreshLastKnownServerRecord(record)` call restores the defect
+  **with no compile error** (the parameter defaults to `false`) — the two refusal tests are the only
+  witness. The mock option lives in `MockCloudDatabase.swift` beside `slimSaveAcks`.
+- Landed on `mango/patches-1.12` only; pushed, **not pinned by any consumer until MonteSprout 120.7**
+  moves the revision once for patches 21–25.
+
 ### Characterization — what a "waiting to upload" count derived from `lastKnownServerRecord` cannot see
 
 *MonteSprout Phase 41.2a — no library change; a pinned fact consumers build on.*
@@ -1352,6 +1456,9 @@ patch owns which region when a conflict does hit.
    **patch 19 (the Mango-owned `CloudKit/Internal/ResignActiveSend.swift` plus the one hunk in
    `SyncEngine.init`'s iOS-only `willResignActive` observer; taking upstream's closure restores the
    sequential, handler-less send with no compile error and no Mac test failure — check the call)**,
+   **patch 21 (the `isBatchBuild: true` argument at the batch builder's `refreshLastKnownServerRecord`
+   call and the early return it guards — a never-confirmed row gets the values baseline only; taking
+   upstream's bare call restores the false confirmation with no compile error — check the argument)**,
    the test
    commits (take them from the tip of the previous `mango/patches-*` branch). Resolve conflicts by **idiom, not line
    number** — the `SyncEngine` error-handling region drifts. Patch 3 conflicts every time, because the
@@ -1439,6 +1546,11 @@ patch owns which region when a conflict does hit.
      `aHungPrivateSend_neverDelaysTheSharedDatabase`; restore → green (verified 2026-09-26). Then grep
      that `SyncEngine.init`'s `willResignActive` observer still calls `sendIndependently` — the only
      hunk in an upstream file, iOS-only, invisible to the Mac suite.
+   - Neutralize patch 21 in place (make the `isBatchBuild` early return in
+     `refreshLastKnownServerRecord` unreachable) → `swift test --filter BatchBuildConfirmationTests`
+     must go **red** on `aRefusedFirstSave_staysUnconfirmed_andARestartLandsIt` and
+     `aParkedFirstSave_readsUnconfirmedUntilItsAck`; then, restored, drop only its baseline write →
+     red on both `aLandedSaveWithALostReply_…` tests; restore → green (verified 2026-11-25).
    - Neutralize patch 12 in place (delete the notify loop at the top of
      `handleFetchedDatabaseChanges`) → `swift test --filter ZonePurgeDelegateTests` must go **red** on
      `aSharedZonePurgeNotifiesTheDelegateBeforeDeletingLocalRows` (zero notices), while
@@ -1447,7 +1559,7 @@ patch owns which region when a conflict does hit.
 
    A rebase that skips these can silently drop a guard. **Before running any of them, read
    "Guard executability" above** — of the pre-Phase-8 guards only five still revert cleanly
-   (patch 10's is the fifth); patches 8, 11, 12, 16 and 17 are **neutralize-in-place by definition** (above)
+   (patch 10's is the fifth); patches 8, 11, 12, 16, 17 and 21 are **neutralize-in-place by definition** (above)
    and don't rot the same way. The byte-identity check described there is the check that actually
    rules out a dropped patch.
 

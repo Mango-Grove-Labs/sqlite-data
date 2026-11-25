@@ -416,3 +416,30 @@ the canonical form; the cherry-pick list remains the conflict map).
    any number of issues, so it cannot pin "exactly one"; the test installs a `RecordingIssueReporter`
    via `withIssueReporters`, which replaces swift-testing's reporter for the scope and lets the
    assertions run outside it (the known trap: expectations inside `withKnownIssue` are swallowed).
+
+## 2026-11-25 — Phase 14.1 (patch 21): building a batch confirms nothing
+
+1. **The builder stops confirming; no outcome list.** For a row whose `lastKnownServerRecord` is NULL
+   the batch build writes `_lastKnownServerRecordAllFields` only. Rejected: clearing the server record
+   on every non-ack outcome of a never-confirmed row — that has to enumerate outcomes (and a lost reply
+   is not an outcome at all), where a builder that confirms nothing needs no list. The consumer's
+   decision record is MonteSprout DECISIONS § "2026-11-25 — Phases 119–120 planned" 9.
+2. **The baseline stays.** The plan's first form skipped the batch-build write altogether. The merge
+   in `upsertFromServerRecord` is skipped when there is no all-fields archive, so a first save that
+   landed with its reply lost would return with no merge and overwrite a later edit. Two tests pin it,
+   one per arrival order (the conflict answer to the re-send; a plain fetch) — the plan asked for the
+   first, the second is the order a relaunch more often produces (a fetch runs before the send).
+3. **A flag on `refreshLastKnownServerRecord`, not a second function.** The NULL test has to be read
+   inside the same write transaction as the update (an ack can land between the provider's read and
+   this write), and the confirmed-row branch is that function's existing body. `isBatchBuild` defaults
+   to `false`, which is also the rebase trap: upstream's bare call compiles.
+4. **A confirmed row's batch-build refresh is left alone.** In the mock it still levels a confirmed
+   row's mirror optimistically (§ 15's harness note); on the real service it is skipped by the date
+   guard. Changing it would move snapshots for no field behaviour.
+5. **The mock keeps `.serverRejectedRequest` as its default answer to a tagless save of an existing
+   record**; `enableInsertConflictsAsServerRecordChanged()` opts one database into the answer real
+   CloudKit is assumed to give. Which is true is a hardware read on the consumer's side; if the mock's
+   default turns out to be the real answer, the lost-reply window needs its own patch (the handler
+   clears the baseline and drops the save).
+6. **Accepted: a permanently refused first save is re-sent at every launch** (patch 9 selects it).
+   Same shape as patches 1 and 8; a cap is a consumer policy.
