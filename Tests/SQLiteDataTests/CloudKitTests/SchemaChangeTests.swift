@@ -948,6 +948,88 @@
           """
         }
       }
+
+      // MANGO PATCH 25 guard (A-F8) — the schema-change backfill must not re-create a row whose
+      // delete is still queued. Upstream read every archive of the table, `_isDeleted` included,
+      // and the backfill's `INSERT … ON CONFLICT DO UPDATE` brought the deleted row back locally
+      // under `isSynchronizing` — no new metadata, no save; once the delete was sent its metadata
+      // went, leaving an untracked ghost. List 1 is the positive control (the backfill ran).
+      // Vacuity guard: dropping `&& !$0._isDeleted` from `updateLocalFromSchemaChange`'s read
+      // turns this red (list 2 comes back).
+      @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
+      @Test func backfillSkipsARowWhoseDeleteIsQueued() async throws {
+        try await userDatabase.userWrite { db in
+          try db.seed {
+            RemindersList(id: 1, title: "Personal")
+            RemindersList(id: 2, title: "Business")
+          }
+        }
+        try await syncEngine.processPendingRecordZoneChanges(scope: .private)
+
+        try await withDependencies {
+          $0.currentTime.now += 60
+        } operation: {
+          // A device on the newer build writes the new column into both records.
+          let personalListRecord = try syncEngine.private.database.record(
+            for: RemindersList.recordID(for: 1)
+          )
+          personalListRecord.setValue(1, forKey: "position", at: now)
+          let businessListRecord = try syncEngine.private.database.record(
+            for: RemindersList.recordID(for: 2)
+          )
+          businessListRecord.setValue(2, forKey: "position", at: now)
+          try await syncEngine.modifyRecords(
+            scope: .private,
+            saving: [personalListRecord, businessListRecord]
+          )
+          .notify()
+
+          // The teacher deletes list 2 while offline: its delete is queued, not sent.
+          try await userDatabase.userWrite { db in
+            try RemindersList.find(2).delete().execute(db)
+          }
+          try await syncEngine.metadatabase.read { db in
+            try #expect(
+              SyncMetadata.where { $0.recordPrimaryKey.eq("2") && $0._isDeleted }.fetchCount(db)
+                == 1
+            )
+          }
+
+          // The app update adds the column; the engine relaunches with the new schema.
+          try await userDatabase.userWrite { db in
+            try #sql(
+              """
+              ALTER TABLE "remindersLists"
+              ADD COLUMN "position" INTEGER NOT NULL ON CONFLICT REPLACE DEFAULT 0
+              """
+            )
+            .execute(db)
+          }
+          let relaunchedSyncEngine = try await SyncEngine(
+            container: syncEngine.container,
+            userDatabase: syncEngine.userDatabase,
+            tables: syncEngine.tables
+              .filter { $0.base != RemindersList.self }
+              + [SynchronizedTable(for: RemindersListWithPosition.self)],
+            privateTables: syncEngine.privateTables
+          )
+          defer { _ = relaunchedSyncEngine }
+
+          let remindersLists = try await userDatabase.read { db in
+            try RemindersListWithPosition.order(by: \.id).fetchAll(db)
+          }
+          expectNoDifference(
+            remindersLists,
+            [RemindersListWithPosition(id: 1, title: "Personal", position: 1)]
+          )
+
+          // The queued delete then goes out; the row stays gone (no local ghost left behind).
+          try await syncEngine.processPendingRecordZoneChanges(scope: .private)
+          try await userDatabase.read { db in
+            try #expect(RemindersListWithPosition.find(2).fetchCount(db) == 0)
+          }
+        }
+      }
     }
   }
 

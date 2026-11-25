@@ -852,9 +852,12 @@
             previousRecordType?.tableInfo ?? []
           )
           .map(\.name)
+          // MANGO PATCH 25 — a row whose delete is still queued (`_isDeleted`) is not backfilled:
+          // the INSERT below would re-create it locally under `isSynchronizing`, and once the
+          // delete is sent its metadata goes, leaving an untracked local ghost (A-F8).
           let lastKnownServerRecords = try await metadatabase.read { db in
             try SyncMetadata
-              .where { $0.recordType.eq(tableName) }
+              .where { $0.recordType.eq(tableName) && !$0._isDeleted }
               .select(\._lastKnownServerRecordAllFields)
               .fetchAll(db)
           }
@@ -1254,27 +1257,23 @@
       changes.sort { lhs, rhs in
         switch (lhs, rhs) {
         case (.saveRecord(let lhs), .saveRecord(let rhs)):
-          guard
-            let lhsRecordType = lhs.tableName,
-            let lhsIndex = tablesByOrder[lhsRecordType],
-            let rhsRecordType = rhs.tableName,
-            let rhsIndex = tablesByOrder[rhsRecordType]
-          else { return true }
-          return lhsIndex < rhsIndex
+          return topologicallyAscending(
+            lhsTableName: lhs.tableName,
+            rhsTableName: rhs.tableName,
+            rootFirst: true
+          )
         case (.deleteRecord(let lhs), .deleteRecord(let rhs)):
-          guard
-            let lhsRecordType = lhs.tableName,
-            let lhsIndex = tablesByOrder[lhsRecordType],
-            let rhsRecordType = rhs.tableName,
-            let rhsIndex = tablesByOrder[rhsRecordType]
-          else { return true }
-          return lhsIndex > rhsIndex
+          return topologicallyAscending(
+            lhsTableName: lhs.tableName,
+            rhsTableName: rhs.tableName,
+            rootFirst: false
+          )
         case (.saveRecord, .deleteRecord):
           return false
         case (.deleteRecord, .saveRecord):
           return true
         default:
-          return true
+          return false
         }
       }
 
@@ -1887,23 +1886,40 @@
               rootFirst: true
             )
           }
+          // MANGO PATCH 25 — each parked ID is fetched from its OWN database
+          // (`container.database(for:)`, by zone owner — patch 11's router), never from the
+          // database of whichever engine is handling this event. The park table holds both
+          // scopes; a shared-zone ID asked of the private database could answer `.unknownItem`
+          // (both zones carry the same name, only the owner differs), and that answer deletes the
+          // park for good below (A-F6). Grouping keeps the topological order within each group.
+          let recordIDsByOwnedZone = Dictionary(
+            grouping: orderedUnsyncedRecordIDs,
+            by: { $0.zoneID.ownerName == CKCurrentUserDefaultName }
+          )
           var unsyncedRecords: [CKRecord] = []
-          for start in stride(from: 0, to: orderedUnsyncedRecordIDs.count, by: batchSize) {
-            let recordIDsBatch =
-              orderedUnsyncedRecordIDs
-              .dropFirst(start)
-              .prefix(batchSize)
-            let results = try await syncEngine.database.records(for: Array(recordIDsBatch))
-            for (recordID, result) in results {
-              switch result {
-              case .success(let record):
-                unsyncedRecords.append(record)
-              case .failure(let error as CKError) where error.code == .unknownItem:
-                try await userDatabase.write { db in
-                  try UnsyncedRecordID.find(recordID).delete().execute(db)
+          for isOwnedZone in [true, false] {
+            guard
+              let recordIDs = recordIDsByOwnedZone[isOwnedZone],
+              let firstRecordID = recordIDs.first
+            else { continue }
+            let database = container.database(for: firstRecordID)
+            for start in stride(from: 0, to: recordIDs.count, by: batchSize) {
+              let recordIDsBatch =
+                recordIDs
+                .dropFirst(start)
+                .prefix(batchSize)
+              let results = try await database.records(for: Array(recordIDsBatch))
+              for (recordID, result) in results {
+                switch result {
+                case .success(let record):
+                  unsyncedRecords.append(record)
+                case .failure(let error as CKError) where error.code == .unknownItem:
+                  try await userDatabase.write { db in
+                    try UnsyncedRecordID.find(recordID).delete().execute(db)
+                  }
+                case .failure:
+                  continue
                 }
-              case .failure:
-                continue
               }
             }
           }

@@ -531,3 +531,20 @@ Six snapshots re-recorded mechanically — the frozen test clock (`now = 0`) mak
 `1`, plus the trigger SQL. (The /finish review's "per-field stamp above the record stamp" residual was
 withdrawn the same day — no write path produces one; a probe and a pin test show it, MANGO-PATCHES § 24.)
 Landed on `mango/patches-1.12` only; not pinned until MonteSprout 120.7.
+
+## 2026-11-25 — Phase 14.5: patch 25, three small ones (MonteSprout 120.6, A-F6–A-F8) — Phase 14 complete
+
+All found by reading. (a) A-F6: the fetch-side retry drain asked `syncEngine.database` — the database of
+whichever engine handled the event — for every parked `UnsyncedRecordID`, though the park table holds both
+scopes; a shared-zone ID asked of the private database could answer `.unknownItem` on hardware (same zone
+name, different owner), which deletes the park for good. It now groups the sorted IDs by zone owner and asks
+`container.database(for:)` (owned first; topological order kept within each group). The mock answers
+`.zoneNotFound`, so `RetryDrainDatabaseTests` (2) pin the observable half: an event of either scope applies a
+parked record of the other. (b) A-F7, half: upstream #571 (`43de040`) taken — the batch comparator is now a
+strict weak ordering (`topologicallyAscending`, `default: false`); source and `sendParentsBeforeChildren` only,
+not its `Package.resolved`. #418 not taken (it sits on upstream commits the fork lacks) — it waits for the next
+retarget with #574. (c) A-F8: the schema-change backfill read `_isDeleted` archives too and re-created a row
+whose delete was queued, leaving an untracked ghost once the delete went; the read now skips them
+(`SchemaChangeTests.backfillSkipsARowWhoseDeleteIsQueued`). All three guards verified red in place. 422 tests,
+zero failures, 21 known issues, unchanged; no snapshot re-recorded. Landed on `mango/patches-1.12` only; the
+consumer pin moves in MonteSprout 120.7.

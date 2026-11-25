@@ -1411,6 +1411,59 @@ The patch — one expression: the stamp is `max(sqlitedata_icloud_currentTime(),
   `ClockSkewStampTests` and `TriggerTests` notice.
 - Landed on `mango/patches-1.12` only; pushed, **not pinned by any consumer until MonteSprout 120.7**.
 
+### 25. Three small ones: the retry drain asks each record's own database, upstream #571, the schema backfill skips deleted rows
+
+*MonteSprout Phase 120.6 — the 2026-11-25 bug bash's A-F6, A-F7 (half) and A-F8 (the consumer's
+`docs/research/2026-11-25-bug-bash/A-sqlite-data-sync-engine.md`). Upstream behaviour; found by reading.*
+
+**(a) The fetch-side retry drain asks each parked ID's own database (A-F6).** `handleFetchedRecordZoneChanges`
+re-fetches every `UnsyncedRecordID` at each fetch event — and upstream asked `syncEngine.database`, the
+database of whichever engine was handling the event. The park table holds both scopes (patch 1's
+reference-violation parks, FK parks of children that arrived before their parent, patch 4's failed asset
+downloads, patch 22's share parks), so a co-teacher's parked shared record was asked of their PRIVATE database
+at every private event. The mock answers `.zoneNotFound` (the drain `continue`s, the shared engine retries);
+if real CloudKit answers `.unknownItem` — both zones are named alike, only the owner differs — the drain
+deletes the park for good and the record is never applied: the permanent husk patch 4 exists to prevent.
+Speculative on hardware (one device run would settle it) and fixed anyway: the fix is the router patch 11
+already uses. The drain now groups the sorted IDs by zone owner and fetches each group from
+`container.database(for:)` (owned zones first; the topological order holds within each group; the
+`modifications` list is re-sorted afterwards as before). An event of either scope now applies a parked record
+of the other scope.
+- **`RetryDrainDatabaseTests`** (2): a participant's parked shared reminder is applied by a PRIVATE-scope
+  event and its park cleared; an owned list parked on the device is applied by a SHARED-scope event.
+- **Guard (neutralize in place, verified 2026-11-25):** `database.records(for:)` back to
+  `syncEngine.database.records(for:)` → both red (the record stays parked and never lands).
+- ⚠️ **Residual:** a whole-call throw from one database's `records(for:)` (not a per-record failure) ends that
+  event's drain, the other group's records included — as a single-database throw always did; every park
+  survives for the next event.
+
+**(b) Upstream #571 — the batch sort is a strict weak ordering (A-F7, half).** Upstream `43de040` taken (source
+and its test `CloudKitTests.sendParentsBeforeChildren`; not its `Package.resolved`): `nextRecordZoneChangeBatch`'s
+comparator returned `true` for both argument orders when a table had no topological index and for the
+`default` case, so parent-before-child order was not guaranteed and patch 1 parked the child for a later
+round. It now uses `topologicallyAscending` (saves root-first, deletes root-last) and `default: false`.
+- **Guard (verified 2026-11-25):** reversing `43de040`'s source hunk → `sendParentsBeforeChildren` red.
+- **Not taken: upstream #418** (delete-then-reinsert of the same id leaves the row untracked; `e72164c`) — it
+  rewrites the enqueue path on top of upstream commits the fork does not carry; it waits for the next upstream
+  retarget, as does #574.
+
+**(c) The schema-change backfill skips a row whose delete is queued (A-F8).** `updateLocalFromSchemaChange`
+read every archive of a table whose schema grew, `_isDeleted` rows included, and its `INSERT … ON CONFLICT DO
+UPDATE` re-created a row the user had deleted while its delete was still queued — under `isSynchronizing`, so
+no new metadata and no save; once the delete was sent its metadata went, leaving an untracked local ghost. The
+read now adds `&& !$0._isDeleted`.
+- **`SchemaChangeTests.backfillSkipsARowWhoseDeleteIsQueued`**: two lists, the new column written into both on
+  the server, list 2 deleted locally (delete queued), the column added and the engine relaunched → list 1 is
+  backfilled (the positive control), list 2 stays gone, also after the queued delete is sent.
+- **Guard (neutralize in place, verified 2026-11-25):** dropping `&& !$0._isDeleted` → red (list 2 is back).
+
+- **Fork suite 422 pass, 21 known issues — unchanged** (2026-11-25, macOS); 4 new tests (3 Mango + upstream's
+  one); no snapshot re-recorded.
+- ⚠️ **Rebase note.** (a) is one block in `handleFetchedRecordZoneChanges`' drain — taking upstream's form
+  compiles and only `RetryDrainDatabaseTests` notices; (b) is upstream's own and arrives with any retarget past
+  `43de040`; (c) is one `where` clause in `updateLocalFromSchemaChange`.
+- Landed on `mango/patches-1.12` only; pushed, **not pinned by any consumer until MonteSprout 120.7**.
+
 ### Characterization — what a "waiting to upload" count derived from `lastKnownServerRecord` cannot see
 
 *MonteSprout Phase 41.2a — no library change; a pinned fact consumers build on.*
