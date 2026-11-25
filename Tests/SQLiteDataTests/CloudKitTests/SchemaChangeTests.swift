@@ -165,8 +165,8 @@
           │   _isDeleted: false,                                               │
           │   _hasLastKnownServerRecord: true,                                 │
           │   _isShared: false,                                                │
-          │   userModificationTime: 0,                                         │
-          │   serverUserModificationTime: 0,                                   │
+          │   userModificationTime: 1,                                         │
+          │   serverUserModificationTime: 1,                                   │
           │   sentUserModificationTime: nil                                    │
           │ )                                                                  │
           └────────────────────────────────────────────────────────────────────┘
@@ -674,8 +674,8 @@
           │   _isDeleted: false,                                               │
           │   _hasLastKnownServerRecord: true,                                 │
           │   _isShared: false,                                                │
-          │   userModificationTime: 0,                                         │
-          │   serverUserModificationTime: 0,                                   │
+          │   userModificationTime: 1,                                         │
+          │   serverUserModificationTime: 1,                                   │
           │   sentUserModificationTime: nil                                    │
           │ )                                                                  │
           └────────────────────────────────────────────────────────────────────┘

@@ -144,7 +144,7 @@
           │   _isDeleted: false,                                               │
           │   _hasLastKnownServerRecord: true,                                 │
           │   _isShared: false,                                                │
-          │   userModificationTime: 0,                                         │
+          │   userModificationTime: 1,                                         │
           │   serverUserModificationTime: 0,                                   │
           │   sentUserModificationTime: nil                                    │
           │ )                                                                  │

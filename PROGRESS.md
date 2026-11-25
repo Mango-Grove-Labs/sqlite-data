@@ -2,7 +2,7 @@
 
 - **Project:** sqlite-data (Mango fork of pointfreeco/sqlite-data)
 - **Target milestone:** Open patch work done — **reached** (Phase 4 closed by patch 16; Phase 11's patch 17 landed on request); stop for review
-- **Status:** `in-progress` — Phase 14 (MonteSprout Phase 120's fork patches 21–25) is open; 14.1–14.3 (patches 21–23) landed. Patches 1–23 sit on **`mango/patches-1.12`** (upstream 1.12.0), the adopted consumer base since MonteSprout's MangoSync 0.11 cascade; `mango/patches-1.10` carries 1–19.
+- **Status:** `in-progress` — Phase 14 (MonteSprout Phase 120's fork patches 21–25) is open; 14.1–14.4 (patches 21–24) landed. Patches 1–24 sit on **`mango/patches-1.12`** (upstream 1.12.0), the adopted consumer base since MonteSprout's MangoSync 0.11 cascade; `mango/patches-1.10` carries 1–19.
 - **Updated:** 2026-11-25
 
 ---
@@ -68,17 +68,18 @@
   - [x] 14.1 Patch 21 — a row is confirmed by an ack, never by a batch build; the batch writes the values baseline only (A-F1) _(`MANGO-PATCHES.md` § 21)_
   - [x] 14.2 Patch 22 — a share's cache always resolves (A-F2, A-F3) _(`MANGO-PATCHES.md` § 22)_
   - [x] 14.3 Patch 23 — share and unshare keep the merge baseline (A-F4) _(`MANGO-PATCHES.md` § 23)_
-  - [ ] 14.4 Patch 24 — a local edit is stamped after everything this device has seen (A-F5; consumer box 120.5)
+  - [x] 14.4 Patch 24 — a local edit is stamped after everything this device has seen (A-F5) _(`MANGO-PATCHES.md` § 24)_
   - [ ] 14.5 Patch 25 — three small ones: the retry drain asks each record's own database, upstream #571, the schema backfill skips deleted rows (A-F6–A-F8; consumer box 120.6)
 
 ---
 
 ## Current Status
 
-- **Current phase / sub-phase:** Phase 14 (the second bug bash's fork patches) — 14.1–14.3 done, 14.4 next
+- **Current phase / sub-phase:** Phase 14 (the second bug bash's fork patches) — 14.1–14.4 done, 14.5 next
 - **State:** in-progress
-- **Last completed:** 14.3 — patch 23 (MonteSprout 120.4). `share(record:)` and `deleteShare` archive the fetched record's system fields with the old baseline's values (`CKRecord.keepingValues(of:)`, the baseline read inside the archiving write), so another device's unfetched edit is applied by the later fetch instead of dropped and overwritten. 8 tests (`ShareBaselineTests`); the guard verified in place. No snapshot re-recorded.
-- **Build:** green · **Tests:** green — **412 tests, ZERO failures, 21 known issues (15 pre-existing + 6 pinned by patch 22's tests)** on `mango/patches-1.12` (2026-11-25, macOS) · **Simulator-verified:** no (the patch touches no iOS-only code)
+- **Last completed:** 14.4 — patch 24 (MonteSprout 120.5). The user-write trigger stamps `max(currentTime(), userModificationTime + 1)`, so a local edit made just after a fetch from a device whose clock runs ahead is still sent and the column no longer freezes. 5 tests (`ClockSkewStampTests`); the guard verified in place. Six snapshots re-recorded mechanically (the frozen test clock's second write is stamped `1`; the trigger SQL).
+- **Build:** green · **Tests:** green — **417 tests, ZERO failures, 21 known issues (15 pre-existing + 6 pinned by patch 22's tests)** on `mango/patches-1.12` (2026-11-25, macOS) · **Simulator-verified:** no (the patch touches no iOS-only code)
+- ⚠ **Patch 24 covers record-level stamps only:** a server record whose per-field stamp sits above its record stamp (a pre-patch device's partly refused send under skew) still refuses a local edit of that column (MANGO-PATCHES § 24 residual; closing it is a batch-builder change, not done).
 - ⚠ **A never-confirmed row dropped with a permanent code is re-sent at every launch** (patch 21 + patch 9): the trade against a refused first save reading as uploaded. And between a batch build and its ack a new row reads unconfirmed — a consumer's never-confirmed count stays above zero through a full-iCloud episode.
 - ⚠ **Patch 21's lost-reply window rests on an assumption the mock cannot check:** that real CloudKit answers a tagless save of an existing record with `.serverRecordChanged` (MANGO-PATCHES § 21). The consumer reads it on hardware at its next pin-class cut.
 - ⚠ **The resign-active observer is iOS-only — the Mac `swift test` never compiles or runs it.** Any change there needs `flowdeck test -p . -s sqlite-data-Package -S <sim> --only SQLiteDataTests/BaseCloudKitTests/AppLifecycleTests` (MANGO-PATCHES § 19).
@@ -93,12 +94,13 @@
 
 ## Next Concrete Action
 
-> **14.4 — patch 24 (a local edit is stamped after everything this device has seen).** First step: read
-> the consumer's `docs/ROADMAP.md` § 120 (box 120.5) and A-F5 in its bug-bash sweep, then the user-write
-> trigger's stamp (`Internal/Triggers.swift`, patch 14's `isSynchronizing` guard). Phase 14 is driven from MonteSprout's roadmap (its
-> `/pilot 119 and 120`); each box is pushed here and pinned once by its 120.7.
+> **14.5 — patch 25 (three small ones: the retry drain asks each record's own database, upstream #571, the
+> schema backfill skips deleted rows).** First step: read the consumer's `docs/ROADMAP.md` § 120 (box 120.6)
+> and A-F6–A-F8 in its bug-bash sweep, then the retry drain in `SyncEngine.swift` (`records(for:)` near the
+> `UnsyncedRecordID` drain) and `CloudContainer.database(for:)`. Phase 14 is driven from MonteSprout's roadmap
+> (its `/pilot 119 and 120`); each box is pushed here and pinned once by its 120.7.
 >
-> ⚠ Patches 21–23 are **inert for MonteSprout until its 120.7 moves the pin** (still `a103a08`, the
+> ⚠ Patches 21–24 are **inert for MonteSprout until its 120.7 moves the pin** (still `a103a08`, the
 > patch-20 tip).
 >
 > **Settled 2026-08-16: the consumer base is `mango/patches-1.10` @ `e18249a`** — decided by action

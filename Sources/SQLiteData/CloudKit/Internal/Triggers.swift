@@ -238,10 +238,27 @@
         // forever, and a share (which re-delivers the whole zone) made that the device's entire
         // row set. The metadata's zone/parent columns above must still follow the server, so the
         // guard is on this column alone rather than on the trigger.
+        //
+        // MANGO PATCH 24 (MonteSprout 120.5, the 2026-11-25 bug bash's A-F5) — a user write is stamped
+        // strictly after everything this device has already seen on the row: `max(now, stamp + 1)`, not
+        // the plain wall clock. The row's stamp is raised to every fetched server record's stamp
+        // (`setLastKnownServerRecord`), so with another device's clock a few seconds ahead, a local
+        // edit made right after its edit arrived took a wall-clock stamp OLDER than the archive's
+        // per-field stamp; the batch builder's `setValue(_:at:)` refused it, the other device's value
+        // went out instead, and the column then read as an unsent edit forever (frozen against later
+        // fetches, written back over the server by the row's next send). Per row only — no ratchet
+        // across rows; nanoseconds, so `+ 1` is invisible against a real clock. "Seen" means the
+        // record-level stamp: a per-field stamp above it (a pre-patch device's partly refused send)
+        // can still refuse that column — MANGO-PATCHES § 24's residual.
         $0.userModificationTime =
           Case()
           .when(SyncEngine.$isSynchronizing, then: $0.userModificationTime)
-          .else($currentTime())
+          .else(
+            #sql(
+              "max(\($currentTime()), \($0.userModificationTime) + 1)",
+              as: Int64.self
+            )
+          )
       }
     }
   }

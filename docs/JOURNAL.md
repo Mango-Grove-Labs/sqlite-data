@@ -517,3 +517,17 @@ unsent-edit pin green by design). 412 tests, zero failures, 21 known issues, unc
 re-recorded. Residuals: a send before the next fetch still overwrites (one fetch long, as before), and a
 values-less pre-patch-18 baseline is no longer back-filled by a share. Landed on `mango/patches-1.12`
 only; not pinned until MonteSprout 120.7.
+
+## 2026-11-25 — Phase 14.4: patch 24, a local edit is stamped after everything this device has seen (MonteSprout 120.5, A-F5)
+
+Upstream behaviour found by reading. The user-write trigger stamped a row with the plain wall clock, while a
+fetch raises the row's stamp to the server record's; with another device's clock ahead, a local edit made just
+after its edit arrived was stamped older than the archive's per-field stamp, `setValue(_:at:)` refused it, the
+other device's value went out, and the column then froze as an "unsent edit" until a later send wrote it back
+over the server. The stamp is now `max(currentTime(), userModificationTime + 1)` inside patch 14's
+`isSynchronizing` guard — per row, nanoseconds. 5 tests (`ClockSkewStampTests`); the guard verified in place
+(both skew tests and the one-tick test red). 417 tests, zero failures, 21 known issues, unchanged (twice).
+Six snapshots re-recorded mechanically — the frozen test clock (`now = 0`) makes a seeded row's second write
+`1`, plus the trigger SQL. Residual (found in /finish review): a per-field stamp above its record's
+stamp — left by a pre-patch device's partly refused send — still refuses that column; documented in § 24,
+not fixed. Landed on `mango/patches-1.12` only; not pinned until MonteSprout 120.7.

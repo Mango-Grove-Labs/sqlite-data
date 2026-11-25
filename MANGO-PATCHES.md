@@ -1355,6 +1355,61 @@ The patch — patch 18's merge in reverse:
   11's function). Taking upstream's form of either write compiles and only `ShareBaselineTests` notice.
 - Landed on `mango/patches-1.12` only; pushed, **not pinned by any consumer until MonteSprout 120.7**.
 
+### 24. A local edit is stamped after everything this device has seen
+
+*MonteSprout Phase 120.5 — the 2026-11-25 bug bash's A-F5 (the consumer's
+`docs/research/2026-11-25-bug-bash/A-sqlite-data-sync-engine.md`). Upstream behaviour; found by reading.*
+
+**The bug.** The user-write trigger (`Internal/Triggers.swift`, `SyncMetadata.update`, inside patch 14's
+`isSynchronizing` guard) stamped the row with the plain wall clock. A fetched server record raises the row's
+stamp to its own (`setLastKnownServerRecord`'s `max`) and puts its per-field stamps in the archive. With the
+other device's clock ahead by Δ, a local edit made within Δ of that fetch took a stamp OLDER than the
+archive's stamp for the column; the batch builder's `setValue(_:forKey:at:)` refused it, so the outgoing
+record carried the other device's value. The row then differed from its new baseline, so every later fetch
+protected the column as an unsent edit (`isRowValueModified`) — the field froze on this device — and the
+row's next send (any later edit) wrote the stale local value back over the server. Consumer shape: a
+co-teacher's iPad set by hand a few seconds fast fixes a note, the lead corrects it on her iPhone just after,
+and her correction never leaves the phone.
+
+The patch — one expression: the stamp is `max(sqlitedata_icloud_currentTime(), userModificationTime + 1)`.
+- **Per row, nanoseconds.** The row's own stamp already carries every record-level stamp this device has seen
+  of that row (every fetch and every local write raises it), so a local edit is strictly newer than all of
+  it (per-field stamps: see the residual below). No ratchet
+  across rows; `+ 1` ns is invisible against a running clock.
+- **Sync-engine writes are unchanged** (patch 14's `isSynchronizing` branch keeps the stamp as it was).
+- **The one user-write stamp site.** The metadata insert's `DEFAULT (currentTime())` is a new row with
+  nothing to be newer than; the insert's `ON CONFLICT` arm writes no stamp (upstream) and is untouched.
+- **Consumers' comparisons hold:** MangoSync's `UploadTruth` (`server < user`) and MonteSprout's
+  `MemberAdoption` (`server >= user`) are inequalities; a write after a fetch now reads as unsent (it is),
+  where under skew it used to read as settled.
+
+- **`ClockSkewStampTests`** (5): a local edit behind a fetch stamped `now + 10 s` is sent and the column does
+  not freeze (the other device's next edit is applied, nothing left to send), with full save echoes and with
+  slim acks; the clock ahead of everything seen is the stamp exactly; two writes in one tick stamp strictly
+  forward; a skewed row does not lift another row's stamp.
+- **Guard (neutralize in place, verified 2026-11-25):** the `else` back to `$currentTime()` → both skew tests
+  and the one-tick test go red. Restore → green.
+- **Fork suite 417 pass, 21 known issues — unchanged** (2026-11-25, macOS, twice). ⚠️ **Snapshots
+  re-recorded, mechanically:** the test clock is frozen at `0`, so a second write to a seeded row is now
+  stamped `1` — `userModificationTime`/`serverUserModificationTime` `0 → 1` in `SchemaChangeTests` (2),
+  `SyncEngineDelegateTests.accountChanged`, `FetchRecordZoneChangesTests.createTagRemotelyThenCreateSameTagLocally`,
+  `SyncEngineLifecycleTests.writeAndThenStart`, and the trigger SQL in `TriggerTests.triggers`. Nothing else
+  in any snapshot moved.
+- ⚠️ **Residual — a far-future clock drags this device along.** A record stamped by a device whose clock is
+  hours ahead lifts the row's stamp that far, and every later local edit of that row is stamped just past it.
+  That is last-writer-wins doing its job for the row; it never spreads to other rows.
+- ⚠️ **Residual — "seen" is the record-level stamp, not the per-field ones.** `setValue(_:forKey:at:)` leaves
+  the record's `userModificationTime` alone for a field it refuses, so a send that was partly refused (any
+  pre-patch device under skew — MonteSprout's unpinned builds) leaves a server record whose per-field stamp
+  for that column is ABOVE its record-level stamp. The row's stamp follows the record-level one, so a local
+  edit of that column can still be stamped below the field's stamp and refused, exactly as before. Patch 24
+  stops new devices from minting such records; closing the leftover would mean the batch builder stamping
+  past the archive's per-field stamps (`SyncEngine.swift`, `update(with:userModificationTime:)` caller) —
+  not done here.
+- ⚠️ **Rebase note.** One hunk, the `else` of patch 14's `Case()`. Taking upstream's form compiles and only
+  `ClockSkewStampTests` and `TriggerTests` notice.
+- Landed on `mango/patches-1.12` only; pushed, **not pinned by any consumer until MonteSprout 120.7**.
+
 ### Characterization — what a "waiting to upload" count derived from `lastKnownServerRecord` cannot see
 
 *MonteSprout Phase 41.2a — no library change; a pinned fact consumers build on.*
