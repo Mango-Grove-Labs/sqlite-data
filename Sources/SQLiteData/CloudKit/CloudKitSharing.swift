@@ -206,6 +206,13 @@
         )
       }
       try await userDatabase.write { db in
+        // MANGO PATCH 23 (A-F4) — the baseline as it stands NOW, read under this write: a fetch that
+        // landed during the awaits above has already applied its values to the row and the archive.
+        let baseline =
+          try SyncMetadata
+          .where { $0.recordName.eq(recordName) }
+          .select(\._lastKnownServerRecordAllFields)
+          .fetchOne(db) ?? nil
         try SyncMetadata
           .where { $0.recordName.eq(recordName) }
           .update {
@@ -215,8 +222,15 @@
             // column. `lastKnownServerRecord` here is the record this call actually SENT (it was
             // fetched from the server moments earlier and handed straight to `modifyRecords`), which
             // is the values half patch 18 asks for; the ack is only the new system fields.
+            //
+            // MANGO PATCH 23 (A-F4) — but those values are the SERVER's, fetched moments ago, and they
+            // never reach the local row. Another device's unfetched edit then sat in the merge baseline
+            // and not in the row: the fetch that delivered it read the stale row as an unsent local edit
+            // and dropped it, and the row's next send overwrote it on the server. So the archive keeps
+            // the old baseline's values and takes only the system fields; the fetch applies the rest.
             $0.setLastKnownServerRecord(
               lastKnownServerRecord.mergingSaveAcknowledgement(savedRootRecord)
+                .keepingValues(of: baseline)
             )
             $0.share = #bind(savedShare)
           }

@@ -503,3 +503,17 @@ tests, zero failures, 21 known issues (15 pre-existing + 6 pinned reports), twic
 re-recorded. Gotcha: Swift Testing's time limit cannot end a suspended continuation — the hang test waits
 from an unstructured task with its own bound, else a regression hangs the suite instead of failing it.
 Landed on `mango/patches-1.12` only; not pinned until MonteSprout 120.7.
+
+## 2026-11-25 — Phase 14.3: patch 23, share and unshare keep the merge baseline (MonteSprout 120.4, A-F4)
+
+An F47 sibling found by reading. `share(record:)` and `deleteShare` archived a root record fetched from the
+server moments earlier — values included — without writing those values into the row, so another device's
+unfetched edit sat in the merge baseline and not the row; the fetch that delivered it read the stale row as
+an unsent local edit and dropped it, and the row's next send pushed the stale value back. New
+`CKRecord.keepingValues(of:)` (package): the fetched/ack system fields with the old baseline's encrypted
+values and assets, the baseline read inside the archiving write. Wire unchanged. 8 tests
+(`ShareBaselineTests`, full echoes and slim acks); the guard verified in place (7 of 8 red, the
+unsent-edit pin green by design). 412 tests, zero failures, 21 known issues, unchanged; no snapshot
+re-recorded. Residuals: a send before the next fetch still overwrites (one fetch long, as before), and a
+values-less pre-patch-18 baseline is no longer back-filled by a share. Landed on `mango/patches-1.12`
+only; not pinned until MonteSprout 120.7.

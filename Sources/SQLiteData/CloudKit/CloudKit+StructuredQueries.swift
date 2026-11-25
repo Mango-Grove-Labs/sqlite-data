@@ -415,6 +415,44 @@
       }
       return merged
     }
+
+    /// MANGO PATCH 23 (A-F4) — `self`'s system fields carrying `baseline`'s values: patch 18's merge in
+    /// reverse.
+    ///
+    /// `share(record:)` and `deleteShare` refresh the archive from a record fetched from the server just
+    /// now, and never write that record's values into the local row. If the server copy carries an edit
+    /// this device has not fetched yet, archiving it whole put the edit in the per-field merge's
+    /// baseline and not in the row, so the fetch that later delivered it read the stale row as an unsent
+    /// local edit and dropped it — and the next send of the row pushed the stale value back over it.
+    /// The fetched record's system fields (change tag, modification date, parent, share reference) are
+    /// news; its values are not this archive's to take until a fetch applies them.
+    ///
+    /// So the result is a copy of `self` with every encrypted key — values, per-field stamps
+    /// (`…_userModificationTime_<key>`), asset hashes, the record stamp — set from `baseline`, or
+    /// cleared where `baseline` lacks it, and every `CKAsset` likewise (the one value kept outside
+    /// `encryptedValues`). Nothing else unencrypted is touched: it is system bookkeeping
+    /// (`_recordChangeTag` must stay `self`'s). With no baseline, or one for another record, `self`
+    /// is returned unchanged — upstream's behaviour.
+    package func keepingValues(of baseline: CKRecord?) -> CKRecord {
+      guard
+        let baseline,
+        baseline.recordID == recordID,
+        let kept = copy() as? CKRecord
+      else {
+        return self
+      }
+      for key in Set(kept.encryptedValues.allKeys()).union(baseline.encryptedValues.allKeys()) {
+        kept.encryptedValues[key] = baseline.encryptedValues[key]
+      }
+      for key in kept.allKeys() where kept[key] is CKAsset {
+        kept[key] = nil
+      }
+      for key in baseline.allKeys() {
+        guard let asset = baseline[key] as? CKAsset else { continue }
+        kept[key] = asset
+      }
+      return kept
+    }
   }
 
   extension DataProtocol {

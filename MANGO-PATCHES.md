@@ -1299,6 +1299,62 @@ zone without disagreement.
   path or its `cacheShare` compiles and only the engine tests notice.
 - Landed on `mango/patches-1.12` only; pushed, **not pinned by any consumer until MonteSprout 120.7**.
 
+### 23. Share and unshare keep the merge baseline
+
+*MonteSprout Phase 120.4 — the 2026-11-25 bug bash's A-F4 (the consumer's
+`docs/research/2026-11-25-bug-bash/A-sqlite-data-sync-engine.md`), an F47 sibling. Found by reading.*
+
+**The bug.** `share(record:)` (`CloudKitSharing.swift`) and `deleteShare` (`SyncEngine.swift`) refresh a
+row's archive from a record fetched from the server moments earlier — and never write that record's values
+into the local row. When the server copy carried another device's edit this device had not fetched yet,
+the edit landed in `_lastKnownServerRecordAllFields` and not in the row. The fetch that later delivered it
+then saw server == baseline (`didSet` false) and row != baseline (`isRowValueModified` true) in
+`CKRecord.update(with:row:columnNames:)`, read the stale row as an unsent local edit and dropped the
+column; nothing was enqueued; the row's next send (any local edit) built its record from that archive plus
+the row and overwrote the other device's edit on the server. `deleteShare` runs before the modifications
+of its own batch (deletions first), so a root modification arriving with the share's deletion was dropped
+by the very batch that carried it. Consumer shape: the lead renames the room on her iPad, taps Invite on
+her iPhone before the rename arrives, and the iPhone keeps the old name and later writes it back.
+
+The patch — patch 18's merge in reverse:
+- **`CKRecord.keepingValues(of:)`** (`CloudKit+StructuredQueries.swift`, `package`) — a copy of the
+  receiver with every encrypted key (values, per-field stamps, asset hashes, the record stamp) set from the
+  baseline or cleared where the baseline lacks it, and every `CKAsset` likewise. System fields (change tag,
+  modification date, parent, share reference) stay the receiver's. With no baseline, or one for another
+  record, it returns the receiver — upstream's behaviour.
+- **`share(record:)`** archives `fetched.mergingSaveAcknowledgement(ack).keepingValues(of: baseline)`;
+  **`deleteShare`** archives `rootRecord.keepingValues(of: baseline)`. In both, the baseline is read
+  **inside the archiving write**, so a fetch that landed during the CloudKit awaits (and applied its values
+  to row and archive alike) is what is kept.
+- **What goes over the wire is unchanged.** `share(record:)` still saves the FETCHED root with the share
+  (re-saving the server's own values); only the archive differs. Patched and unpatched devices agree.
+- **The mirror is unaffected:** the archived record stamp is the baseline's, so patch 7's
+  `serverUserModificationTime` keeps the value it had; the fetch that applies the server copy moves it.
+
+- **`ShareBaselineTests`** (8): share and stop-sharing each keep the baseline with full save echoes and
+  with slim acks (archive unchanged, share reference archived, the later fetch applies the rename, a later
+  send keeps it on the server); the share deletion and the rename in ONE batch applies the rename; a
+  genuinely unsent local edit made before the share still wins (the non-ratchet pin — green either way by
+  design); the helper on encrypted keys and on assets.
+- **Guard (neutralize in place, verified 2026-11-25):** `keepingValues(of:)` returning `self` at once →
+  every test but the unsent-edit pin goes red. Restore → green.
+- **Fork suite 412 pass, 21 known issues — unchanged** (2026-11-25, macOS, twice). **No snapshot
+  re-recorded** (`SharingTests.deleteShare`'s metadata and container snapshots hold as they were).
+- ⚠️ **Residual — a send before the fetch.** Between the share/unshare and the fetch that delivers the
+  server copy, a send of the row is built on the archive (the NEW change tag, the old values) plus the row,
+  so it still overwrites the other device's edit on the server — exactly as before this patch (then the
+  row's newer local stamp won over the archived value instead). The window is one fetch long; closing it
+  would mean keeping the old change tag too and taking a conflict on every first send after a share.
+- ⚠️ **Residual — a values-less baseline stays values-less.** An archive written before patch 18 (a slim
+  ack archived whole) carries no encrypted values; sharing or unsharing such a row now keeps it empty
+  instead of filling it from the server copy, so patch 18's dropped-edit shape persists for that row until
+  a fetch rewrites its archive. Deliberate: falling back to the server values there would reopen A-F4, and
+  no current write path produces such an archive.
+- ⚠️ **Rebase note.** Hunks: the helper beside `mergingSaveAcknowledgement`, the archiving write of
+  `share(record:)` (where patch 18's merge already reads two locals by name) and of `deleteShare` (patch
+  11's function). Taking upstream's form of either write compiles and only `ShareBaselineTests` notice.
+- Landed on `mango/patches-1.12` only; pushed, **not pinned by any consumer until MonteSprout 120.7**.
+
 ### Characterization — what a "waiting to upload" count derived from `lastKnownServerRecord` cannot see
 
 *MonteSprout Phase 41.2a — no library change; a pinned fact consumers build on.*

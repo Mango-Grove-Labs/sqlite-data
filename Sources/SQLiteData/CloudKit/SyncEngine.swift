@@ -2592,15 +2592,21 @@
       // record's zone owner instead (the same `database(for:)` the asset re-fetch path uses).
       let rootRecord = try await container.database(for: rootRecordID).record(for: rootRecordID)
       try await userDatabase.write { db in
+        // MANGO PATCH 23 (A-F4) — `rootRecord` is the server's copy, fetched just now, and its values
+        // never reach the local row. Archived whole, another device's unfetched edit to the root sat in
+        // the merge baseline and not in the row — and deletions are processed before modifications, so
+        // a root modification in this very batch was then read as "the row holds an unsent local edit"
+        // and dropped, and the row's next send overwrote it on the server. Keep the baseline's values
+        // (read under this write), take only the system fields (the share reference is gone).
+        let baseline =
+          try SyncMetadata
+          .find(rootRecordID)
+          .select(\._lastKnownServerRecordAllFields)
+          .fetchOne(db) ?? nil
         try SyncMetadata
-          .find(
-            CKRecord.ID(
-              recordName: recordName,
-              zoneID: CKRecordZone.ID(zoneName: zoneName, ownerName: ownerName)
-            )
-          )
+          .find(rootRecordID)
           .update {
-            $0.setLastKnownServerRecord(rootRecord)
+            $0.setLastKnownServerRecord(rootRecord.keepingValues(of: baseline))
             $0.share = #bind(nil)
           }
           .execute(db)
