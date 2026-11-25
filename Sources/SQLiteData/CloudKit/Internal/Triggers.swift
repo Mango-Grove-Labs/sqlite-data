@@ -247,9 +247,9 @@
         // per-field stamp; the batch builder's `setValue(_:at:)` refused it, the other device's value
         // went out instead, and the column then read as an unsent edit forever (frozen against later
         // fetches, written back over the server by the row's next send). Per row only — no ratchet
-        // across rows; nanoseconds, so `+ 1` is invisible against a real clock. "Seen" means the
-        // record-level stamp: a per-field stamp above it (a pre-patch device's partly refused send)
-        // can still refuse that column — MANGO-PATCHES § 24's residual.
+        // across rows; nanoseconds, so `+ 1` is invisible against a real clock. The record-level stamp
+        // covers every per-field stamp (its setter is a `max`, and every per-field write raises it), so
+        // "seen" on the row is enough — MANGO-PATCHES § 24.
         $0.userModificationTime =
           Case()
           .when(SyncEngine.$isSynchronizing, then: $0.userModificationTime)

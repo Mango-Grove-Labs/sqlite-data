@@ -143,6 +143,20 @@
         try await syncEngine.processPendingRecordZoneChanges(scope: .private)
       }
 
+      /// The row's stamp is enough: a record never carries a field stamp above its record stamp, even after a
+      /// refused field write (what a pre-patch device under skew does), so "seen on the row" covers every field.
+      @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
+      @Test func aRefusedFieldNeverLeavesItsStampAboveTheRecords() throws {
+        let record = CKRecord(recordType: RemindersList.tableName, recordID: listID)
+        record.setValue("Sunflower Room", forKey: "title", at: 100)
+        #expect(record.setValue("Tulip Room", forKey: "title", at: 50) == false)
+        record.setValue(Int64(1), forKey: "position", at: 50)
+        let fieldStamp = record.encryptedValues["\(CKRecord.userModificationTimeKey)_title"] as? Int64
+        #expect(fieldStamp == 100)
+        #expect(record.userModificationTime == 100)
+        #expect(record.encryptedValues["title"] as? String == "Sunflower Room")
+      }
+
       /// No ratchet across rows: a high stamp on one row does not lift another row's next stamp.
       @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
       @Test func aSkewedRow_doesNotLiftAnotherRowsStamp() async throws {

@@ -525,9 +525,9 @@ fetch raises the row's stamp to the server record's; with another device's clock
 after its edit arrived was stamped older than the archive's per-field stamp, `setValue(_:at:)` refused it, the
 other device's value went out, and the column then froze as an "unsent edit" until a later send wrote it back
 over the server. The stamp is now `max(currentTime(), userModificationTime + 1)` inside patch 14's
-`isSynchronizing` guard — per row, nanoseconds. 5 tests (`ClockSkewStampTests`); the guard verified in place
-(both skew tests and the one-tick test red). 417 tests, zero failures, 21 known issues, unchanged (twice).
+`isSynchronizing` guard — per row, nanoseconds. 6 tests (`ClockSkewStampTests`); the guard verified in place
+(both skew tests and the one-tick test red). 418 tests, zero failures, 21 known issues, unchanged (twice).
 Six snapshots re-recorded mechanically — the frozen test clock (`now = 0`) makes a seeded row's second write
-`1`, plus the trigger SQL. Residual (found in /finish review): a per-field stamp above its record's
-stamp — left by a pre-patch device's partly refused send — still refuses that column; documented in § 24,
-not fixed. Landed on `mango/patches-1.12` only; not pinned until MonteSprout 120.7.
+`1`, plus the trigger SQL. (The /finish review's "per-field stamp above the record stamp" residual was
+withdrawn the same day — no write path produces one; a probe and a pin test show it, MANGO-PATCHES § 24.)
+Landed on `mango/patches-1.12` only; not pinned until MonteSprout 120.7.

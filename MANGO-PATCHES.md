@@ -1374,8 +1374,10 @@ and her correction never leaves the phone.
 The patch — one expression: the stamp is `max(sqlitedata_icloud_currentTime(), userModificationTime + 1)`.
 - **Per row, nanoseconds.** The row's own stamp already carries every record-level stamp this device has seen
   of that row (every fetch and every local write raises it), so a local edit is strictly newer than all of
-  it (per-field stamps: see the residual below). No ratchet
-  across rows; `+ 1` ns is invisible against a running clock.
+  it — per-field stamps included: the record stamp's setter is a `max`, and every per-field write
+  (`setValue`/`setAsset`/`setBytes`/`removeValue`) raises it, so no record carries a field stamp above its
+  record stamp.
+  No ratchet across rows; `+ 1` ns is invisible against a running clock.
 - **Sync-engine writes are unchanged** (patch 14's `isSynchronizing` branch keeps the stamp as it was).
 - **The one user-write stamp site.** The metadata insert's `DEFAULT (currentTime())` is a new row with
   nothing to be newer than; the insert's `ON CONFLICT` arm writes no stamp (upstream) and is untouched.
@@ -1383,13 +1385,14 @@ The patch — one expression: the stamp is `max(sqlitedata_icloud_currentTime(),
   `MemberAdoption` (`server >= user`) are inequalities; a write after a fetch now reads as unsent (it is),
   where under skew it used to read as settled.
 
-- **`ClockSkewStampTests`** (5): a local edit behind a fetch stamped `now + 10 s` is sent and the column does
+- **`ClockSkewStampTests`** (6): a local edit behind a fetch stamped `now + 10 s` is sent and the column does
   not freeze (the other device's next edit is applied, nothing left to send), with full save echoes and with
   slim acks; the clock ahead of everything seen is the stamp exactly; two writes in one tick stamp strictly
-  forward; a skewed row does not lift another row's stamp.
+  forward; a skewed row does not lift another row's stamp; a refused field write never leaves its stamp above
+  the record's (the pin below).
 - **Guard (neutralize in place, verified 2026-11-25):** the `else` back to `$currentTime()` → both skew tests
   and the one-tick test go red. Restore → green.
-- **Fork suite 417 pass, 21 known issues — unchanged** (2026-11-25, macOS, twice). ⚠️ **Snapshots
+- **Fork suite 418 pass, 21 known issues — unchanged** (2026-11-25, macOS, twice). ⚠️ **Snapshots
   re-recorded, mechanically:** the test clock is frozen at `0`, so a second write to a seeded row is now
   stamped `1` — `userModificationTime`/`serverUserModificationTime` `0 → 1` in `SchemaChangeTests` (2),
   `SyncEngineDelegateTests.accountChanged`, `FetchRecordZoneChangesTests.createTagRemotelyThenCreateSameTagLocally`,
@@ -1398,14 +1401,12 @@ The patch — one expression: the stamp is `max(sqlitedata_icloud_currentTime(),
 - ⚠️ **Residual — a far-future clock drags this device along.** A record stamped by a device whose clock is
   hours ahead lifts the row's stamp that far, and every later local edit of that row is stamped just past it.
   That is last-writer-wins doing its job for the row; it never spreads to other rows.
-- ⚠️ **Residual — "seen" is the record-level stamp, not the per-field ones.** `setValue(_:forKey:at:)` leaves
-  the record's `userModificationTime` alone for a field it refuses, so a send that was partly refused (any
-  pre-patch device under skew — MonteSprout's unpinned builds) leaves a server record whose per-field stamp
-  for that column is ABOVE its record-level stamp. The row's stamp follows the record-level one, so a local
-  edit of that column can still be stamped below the field's stamp and refused, exactly as before. Patch 24
-  stops new devices from minting such records; closing the leftover would mean the batch builder stamping
-  past the archive's per-field stamps (`SyncEngine.swift`, `update(with:userModificationTime:)` caller) —
-  not done here.
+- **Not a residual — a field stamp above its record stamp.** The /finish review of this patch named one (a
+  pre-patch device's partly refused send leaving a server field stamp above the record's); withdrawn
+  2026-11-25: a refused `setValue` leaves the record stamp where it was, and it was already at or above the
+  field's stamp (the archive's record stamp is a `max` over its fields). Probe with the trigger neutralized:
+  the server record after the refused send reads record `10 s` = field `10 s`. Pinned by
+  `ClockSkewStampTests.aRefusedFieldNeverLeavesItsStampAboveTheRecords`.
 - ⚠️ **Rebase note.** One hunk, the `else` of patch 14's `Case()`. Taking upstream's form compiles and only
   `ClockSkewStampTests` and `TriggerTests` notice.
 - Landed on `mango/patches-1.12` only; pushed, **not pinned by any consumer until MonteSprout 120.7**.
