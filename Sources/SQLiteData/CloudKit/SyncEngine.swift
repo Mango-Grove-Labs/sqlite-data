@@ -572,6 +572,11 @@
           )
           try await cacheUserTables(recordTypes: currentRecordTypes)
         }
+        // MANGO PATCH 22 — see `retryParkedShares`. Outside the block above, so a failed start
+        // step does not skip it; gated on the account the same way.
+        guard (try? await container.accountStatus()) == .available
+        else { return }
+        await retryParkedShares()
       }
       self.startTask.withValue {
         $0?.cancel()
@@ -1858,7 +1863,13 @@
             )
           }
           let modificationRecordIDs = Set(modifications.map(\.recordID))
-          let unsyncedRecordIDsToDelete = modificationRecordIDs.intersection(unsyncedRecordIDs)
+          // MANGO PATCH 22 — a share's park is removed only by a successful cache (or the drain's
+          // `.unknownItem` answer below), never by the share merely arriving: its cache can fail
+          // again.
+          let unsyncedRecordIDsToDelete = Set(
+            modifications.filter { !($0 is CKShare) }.map(\.recordID)
+          )
+          .intersection(unsyncedRecordIDs)
           unsyncedRecordIDs.subtract(modificationRecordIDs)
           if !unsyncedRecordIDsToDelete.isEmpty {
             try await userDatabase.write { db in
@@ -1940,9 +1951,17 @@
                 try await self.cacheShare(share)
               }
             case .reference(let shareReference):
-              guard
-                let record = try? await syncEngine.database.record(for: shareReference.recordID),
-                let share = record as? CKShare
+              let record: CKRecord
+              do {
+                record = try await syncEngine.database.record(for: shareReference.recordID)
+              } catch let error as CKError where error.code == .unknownItem {
+                return
+              } catch {
+                // MANGO PATCH 22 — a failed share fetch is parked; the drain re-fetches it.
+                await self.parkShare(shareReference.recordID)
+                return
+              }
+              guard let share = record as? CKShare
               else { return }
               await withErrorReporting(.sqliteDataCloudKitFailure) {
                 try await self.cacheShare(share)
@@ -2452,15 +2471,103 @@
       }
     }
 
+    // MANGO PATCH 22 (MonteSprout Phase 120.2, bug bash A-F3) — a share's cache always resolves:
+    // it lands, or the share's record ID is parked in `UnsyncedRecordID` and retried.
+    //
+    // Upstream's only writes of `SyncMetadata.share` on a receiving device run once per fetched
+    // record. A thrown metadata fetch, a failed share fetch from a root's reference (`try?`) or an
+    // `UPDATE` that ran before the root's metadata row existed (0 rows, silent success) left `share`
+    // NULL with the change token advanced — the room read "not shared" on that device until the
+    // share or its root changed again (patch 13 could not recognise the roots; "Leave" failed with
+    // `shareNotFound`).
+    //
+    // Now each of those parks the share's record ID. The fetch-side drain re-fetches a parked ID at
+    // the next fetch event (a CKShare comes back through the `.share` path, here), and engine start
+    // retries share parks (`retryParkedShares`). The park is deleted by a successful cache — the
+    // only thing that removes it, since a share merely arriving can fail again — or by the drain's
+    // `.unknownItem` answer (the share is gone). A share with no URL is never parked: there is
+    // nothing to fetch. A thrown fetch still rethrows, so it is reported as before.
     private func cacheShare(_ share: CKShare) async throws {
-      let metadata = try await container.shareMetadata(for: share, shouldFetchRootRecord: false)
-      guard let rootRecordID = metadata.hierarchicalRootRecordID
-      else { return }
+      let metadata: ShareMetadata
+      do {
+        metadata = try await container.shareMetadata(for: share, shouldFetchRootRecord: false)
+      } catch ShareMetadataFetchError.missingURL {
+        return
+      } catch {
+        await parkShare(share.recordID)
+        throw error
+      }
       try await userDatabase.write { db in
+        guard let rootRecordID = metadata.hierarchicalRootRecordID
+        else {
+          // A zone-wide share has no root to cache on; nothing left to retry.
+          try UnsyncedRecordID.find(share.recordID).delete().execute(db)
+          return
+        }
         try SyncMetadata
           .find(rootRecordID)
           .update { $0.share = #bind(share) }
           .execute(db)
+        if db.changesCount == 0 {
+          try UnsyncedRecordID.insert {
+            UnsyncedRecordID(recordID: share.recordID)
+          } onConflictDoUpdate: { _ in
+          }
+          .execute(db)
+        } else {
+          try UnsyncedRecordID.find(share.recordID).delete().execute(db)
+        }
+      }
+    }
+
+    /// MANGO PATCH 22 — park a share whose cache did not land. See `cacheShare`.
+    private func parkShare(_ shareRecordID: CKRecord.ID) async {
+      await withErrorReporting(.sqliteDataCloudKitFailure) {
+        try await userDatabase.write { db in
+          try UnsyncedRecordID.insert {
+            UnsyncedRecordID(recordID: shareRecordID)
+          } onConflictDoUpdate: { _ in
+          }
+          .execute(db)
+        }
+      }
+    }
+
+    /// MANGO PATCH 22 — engine start retries parked shares, so a park does not wait for a fetch
+    /// event that carries a change. A share park is recognised by its record name (`share-…`, this
+    /// library's naming, or CloudKit's zone-wide share name) and confirmed by the fetched record
+    /// being a `CKShare`; anything else is left to the fetch-side drain. Each is fetched from its
+    /// own database.
+    private func retryParkedShares() async {
+      let parkedShareIDs =
+        await withErrorReporting(.sqliteDataCloudKitFailure) {
+          try await metadatabase.read { db in
+            try UnsyncedRecordID.all
+              .fetchAll(db)
+              .map(CKRecord.ID.init(unsyncedRecordID:))
+              .filter(\.isShareRecordName)
+          }
+        }
+        ?? []
+      for shareRecordID in parkedShareIDs {
+        let record: CKRecord
+        do {
+          record = try await container.database(for: shareRecordID).record(for: shareRecordID)
+        } catch let error as CKError where error.code == .unknownItem {
+          await withErrorReporting(.sqliteDataCloudKitFailure) {
+            try await userDatabase.write { db in
+              try UnsyncedRecordID.find(shareRecordID).delete().execute(db)
+            }
+          }
+          continue
+        } catch {
+          continue
+        }
+        guard let share = record as? CKShare
+        else { continue }
+        await withErrorReporting(.sqliteDataCloudKitFailure) {
+          try await cacheShare(share)
+        }
       }
     }
 
@@ -2818,6 +2925,12 @@
   }
 
   extension CKRecord.ID {
+    /// MANGO PATCH 22 — the record names a `CKShare` gets: this library's `share-<root name>`, or
+    /// CloudKit's zone-wide share name.
+    var isShareRecordName: Bool {
+      recordName.hasPrefix("share-") || recordName == CKRecordNameZoneWideShare
+    }
+
     var tableName: String? {
       guard
         let i = recordName.utf8.lastIndex(of: UTF8.CodeUnit(ascii: ":")),

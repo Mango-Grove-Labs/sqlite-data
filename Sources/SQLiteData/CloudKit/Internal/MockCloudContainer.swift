@@ -40,10 +40,17 @@
       _accountStatus.withValue { $0 }
     }
 
+    /// MANGO PATCH 22 (MonteSprout Phase 120.2) — errors the next share-metadata fetches throw, in
+    /// order, one per call. Empty (the default) answers from storage, as before.
+    package let shareMetadataFailures = LockIsolated<[any Error]>([])
+
     package func shareMetadata(
       for share: CKShare,
       shouldFetchRootRecord: Bool
     ) async throws -> ShareMetadata {
+      if let failure = shareMetadataFailures.withValue({ $0.isEmpty ? nil : $0.removeFirst() }) {
+        throw failure
+      }
       let database =
         share.recordID.zoneID.ownerName == CKCurrentUserDefaultName
         ? privateCloudDatabase

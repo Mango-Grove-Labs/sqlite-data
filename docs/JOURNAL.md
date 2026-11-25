@@ -487,3 +487,19 @@ dropped baseline write reddens both crash-window tests. 391 tests, zero failures
 (macOS); no snapshot re-recorded. Gotcha: an orphan 5.3b ledger row would re-enqueue the row at start and
 make the restart test pass without the patch — the test waits the ledger to zero before the stop.
 Landed on `mango/patches-1.12` only; not pinned until MonteSprout 120.7.
+
+## 2026-11-25 — Phase 14.2: patch 22, a share's cache always resolves (MonteSprout 120.2, A-F2 + A-F3)
+
+Two halves of one failure. A-F2 (upstream's): the live `CKContainer.shareMetadata` resumed only from the
+per-share block, so an operation-level failure — reported through the completion block, never set — left
+the continuation suspended and with it the engine's serial event delivery for that database, until
+relaunch. The wrapper now resumes once from the completion block (checked continuation, cancellation
+cancels the operation, CloudKit timeouts 30/60 s, `shouldFetchRootRecord` honoured, no URL throws first),
+factored over a `run` seam so a test drives the blocks by hand. A-F3: a share cache that failed (thrown
+fetch, failed share fetch from a root reference, `UPDATE` before the root row) was never retried; it now
+parks the share's ID in `UnsyncedRecordID`, retried by the drain at the next fetch event and at engine
+start, unparked by a successful cache or `.unknownItem`. 13 tests; three guards verified in place. 404
+tests, zero failures, 21 known issues (15 pre-existing + 6 pinned reports), twice; no snapshot
+re-recorded. Gotcha: Swift Testing's time limit cannot end a suspended continuation — the hang test waits
+from an unstructured task with its own bound, else a regression hangs the suite instead of failing it.
+Landed on `mango/patches-1.12` only; not pinned until MonteSprout 120.7.

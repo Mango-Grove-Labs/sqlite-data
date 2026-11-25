@@ -34,6 +34,10 @@
       /// per database (`enableInsertConflictsAsServerRecordChanged()`), never on by default: every
       /// existing test is written against the rejection.
       package var insertConflictsAsServerRecordChanged = false
+      /// MANGO PATCH 22 (MonteSprout Phase 120.2) — a one-shot failure for the next
+      /// `record(for:)` of an ID (a failed share fetch from a root's share reference). Consumed by
+      /// the call that throws it.
+      package var nextRecordFetchFailures: [CKRecord.ID: CKError] = [:]
       var assets: [AssetID: Data] = [:]
       var deletedRecords: [(CKRecord.ID, CKRecord.RecordType)] = []
       mutating func nextRecordChangeTag() -> Int {
@@ -91,6 +95,9 @@
       guard accountStatus == .available
       else { throw ckError(forAccountStatus: accountStatus) }
       let record = try state.withValue { state in
+        if let failure = state.nextRecordFetchFailures.removeValue(forKey: recordID) {
+          throw failure
+        }
         guard let zone = state.storage[recordID.zoneID]
         else { throw CKError(.zoneNotFound) }
         guard let record = zone.records[recordID]

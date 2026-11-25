@@ -1213,6 +1213,92 @@ never-sent row always has.
 - Landed on `mango/patches-1.12` only; pushed, **not pinned by any consumer until MonteSprout 120.7**
   moves the revision once for patches 21–25.
 
+### 22. A share's cache always resolves
+
+*MonteSprout Phase 120.2 — the 2026-11-25 bug bash's A-F2 and A-F3 (the consumer's
+`docs/research/2026-11-25-bug-bash/A-sqlite-data-sync-engine.md`). Found by reading. A-F2 is upstream's
+own defect, unchanged on `upstream/main`; it is the likely cause of F55's unexplained 20-minute pending
+note that a relaunch healed.*
+
+**A-F2 — the live metadata fetch could hang a whole database.** `CKContainer.shareMetadata` resumed an
+unsafe continuation from `perShareMetadataResultBlock` only. An operation-level failure (network lost,
+the system cancelling the operation, a whole-request rate limit) arrives through the completion block,
+which upstream never set, so the continuation stayed suspended — and `cacheShare` is awaited inside
+`handleFetchedRecordZoneChanges`, which CKSyncEngine's serial event delivery waits on: that engine
+delivered nothing more until relaunch. A share with no URL built an empty operation whose per-share block
+could never run.
+
+The patch (`Internal/CloudContainer.swift`, `fetchShareMetadata(shareURL:shouldFetchRootRecord:run:)`):
+- no URL throws `ShareMetadataFetchError.missingURL` before anything runs;
+- the per-share block only records its result; **the completion block resumes once** — its error, else
+  the recorded result, else `.noResult`; a checked continuation;
+- task cancellation cancels the operation (CloudKit completes it with `.operationCancelled`); a fetch
+  cancelled before the hand-over never runs it and throws `CancellationError`;
+- CloudKit's own timeouts on the operation: request 30 s, resource 60 s (a timeout arrives as a failed
+  completion, so it parks below);
+- `shouldFetchRootRecord` is honoured (upstream forced `true`; the engine passes `false`);
+- `run` is the seam (the live wrapper passes `add(_:)`), and the URL is a parameter, because a test can
+  neither drive a real operation nor make a `CKShare` that has a URL.
+
+**A-F3 — a share cache that failed once was never retried.** The only writes of `SyncMetadata.share` on a
+receiving device run once per fetched record. A thrown metadata fetch, a failed share fetch from a root's
+share reference (`try?`), or an `UPDATE` run before the root's metadata row existed (0 rows, silent
+success) left the share NULL with the change token advanced: the room read "not shared" on that device
+until the share or its root changed again (patch 13 could not recognise its roots, a participant's
+"Leave" failed with `shareNotFound`, the lead's other device listed no co-teachers).
+
+The patch (`SyncEngine.swift`):
+- **each of those three parks the share's record ID in `UnsyncedRecordID`** (patch 1's idiom). A thrown
+  fetch still rethrows, so it is reported exactly as before; the other two park silently, as their
+  upstream forms were silent. `.unknownItem` on the share fetch is not parked (the share is gone).
+- **`ShareMetadataFetchError.missingURL` is not parked** — a share with no URL has nothing to fetch.
+- **The park is removed by a successful cache** — in the same write as the `UPDATE`, when it matched a
+  row — **or by the drain's existing `.unknownItem` answer.** Nothing else removes it: the drain's "this
+  ID arrived in the event" clean-up now skips `CKShare` records, since a share arriving can fail to cache
+  again. A share with no hierarchical root (a zone-wide share) has nothing to cache on and unparks too.
+- **Retried at the next fetch event that carries a change** (the drain re-fetches the parked ID; a
+  `CKShare` comes back through the `.share` path) **and at engine start** (`retryParkedShares`, after the
+  start task's steps, gated on an available account, each share fetched from its own database). Start
+  recognises a share park by its record name — `share-…` (this library's naming) or
+  `CKRecordNameZoneWideShare` — and acts only if the fetched record is a `CKShare`; anything else is left
+  to the drain.
+
+**Nothing on the wire changes** — no outgoing record differs, so patched and unpatched devices share a
+zone without disagreement.
+
+- **The mock gains two one-shot failure hooks**: `MockCloudContainer.shareMetadataFailures` (errors the
+  next metadata fetches throw, in order) and `MockCloudDatabase.State.nextRecordFetchFailures` (the next
+  `record(for:)` of an ID throws). Both default empty.
+- **`ShareCacheResolutionTests`** (6, mock engine): a failed metadata fetch parks and the next fetch event
+  caches; a share cached before its root row parks and clears when it lands; a failed share fetch from a
+  root reference parks and is retried; a park is retried at engine start; a parked share that is gone is
+  unparked by the drain; a share with no URL is not parked. A delivery of a share with its root caches
+  twice (the `.share` path and the root's `.reference` path), so the tests arm a failure for each.
+  **`LiveShareMetadataFetchTests`** (7, the live wrapper's blocks driven by hand): a completion-only
+  failure throws (waited on from an unstructured task with its own bound — a suspended continuation
+  ignores Swift Testing's time limit, so a regression would otherwise hang the suite, not fail it); a
+  per-share failure throws once at completion; a successful completion with no share throws `.noResult`;
+  no URL throws before anything runs; the timeouts and the root-record flag; cancellation cancels the
+  operation; a pre-cancelled fetch never runs it.
+- **Guards (neutralize in place, verified 2026-11-25):** `parkShare` returning at once plus the
+  `changesCount == 0` branch skipping its insert → five of the six engine tests go red (the no-URL test
+  stays green, as it should); the `retryParkedShares()` call dropped → the start test goes red; the
+  completion block's failure resume dropped → the completion-only test goes red in ~7 s. Restore → green.
+- **Fork suite 404 pass, 21 known issues = the 15 pre-existing + the 6 `withKnownIssue` reports these
+  tests pin** (a thrown fetch is still reported) (2026-11-25, macOS, twice). **No snapshot re-recorded.**
+- ⚠️ **Residuals.** A share whose root row never appears locally (a root in a table this database does
+  not sync) stays parked and costs one extra record fetch per fetch event. A park waits for a fetch event
+  that carries a change or the next start — not a timer. The drain still asks the event's own database
+  for every parked ID (A-F6, patch 25), so a co-teacher's share park is retried by her shared engine's
+  events, not the private one's. That CloudKit answers a cancelled-before-start operation through its
+  completion block is not relied on (the pre-cancel check), but a cancel racing the hand-over is.
+- ⚠️ **Rebase note.** Hunks: `CloudContainer.swift` (the live wrapper — upstream's body restores A-F2
+  with no compile error), `SyncEngine.swift` (`cacheShare`, `parkShare`, `retryParkedShares`, its call at
+  the end of the start task, the drain's `CKShare` skip, the `.reference` path's `do/catch` in place of
+  `try?`, `CKRecord.ID.isShareRecordName`), the two mock hooks. Taking upstream's `try?` `.reference`
+  path or its `cacheShare` compiles and only the engine tests notice.
+- Landed on `mango/patches-1.12` only; pushed, **not pinned by any consumer until MonteSprout 120.7**.
+
 ### Characterization — what a "waiting to upload" count derived from `lastKnownServerRecord` cannot see
 
 *MonteSprout Phase 41.2a — no library change; a pinned fact consumers build on.*
@@ -1459,6 +1545,10 @@ patch owns which region when a conflict does hit.
    **patch 21 (the `isBatchBuild: true` argument at the batch builder's `refreshLastKnownServerRecord`
    call and the early return it guards — a never-confirmed row gets the values baseline only; taking
    upstream's bare call restores the false confirmation with no compile error — check the argument)**,
+   **patch 22 (the live `fetchShareMetadata` wrapper in `CloudContainer.swift`; in `SyncEngine.swift`
+   `cacheShare`/`parkShare`/`retryParkedShares`, the start task's trailing call, the drain's `CKShare`
+   skip and the `.reference` path's `do/catch` — taking upstream's wrapper or its `try?` restores the hang
+   or the silent loss with no compile error — check each)**,
    the test
    commits (take them from the tip of the previous `mango/patches-*` branch). Resolve conflicts by **idiom, not line
    number** — the `SyncEngine` error-handling region drifts. Patch 3 conflicts every time, because the
@@ -1551,6 +1641,12 @@ patch owns which region when a conflict does hit.
      must go **red** on `aRefusedFirstSave_staysUnconfirmed_andARestartLandsIt` and
      `aParkedFirstSave_readsUnconfirmedUntilItsAck`; then, restored, drop only its baseline write →
      red on both `aLandedSaveWithALostReply_…` tests; restore → green (verified 2026-11-25).
+   - Neutralize patch 22 in place (`parkShare` returns at once and the `changesCount == 0` branch skips
+     its insert) → `swift test --filter ShareCacheResolutionTests` must go **red** on every test but
+     `aShareWithNoURL_isNotParked`; restored, drop the start task's `retryParkedShares()` call → red on
+     `aParkedShare_isRetriedAtEngineStart`; restored, drop the completion block's failure resume in
+     `fetchShareMetadata` → red on `aCompletionOnlyFailure_throws_neverHangs` (bounded, ~7 s — never a
+     hang); restore → green (verified 2026-11-25).
    - Neutralize patch 12 in place (delete the notify loop at the top of
      `handleFetchedDatabaseChanges`) → `swift test --filter ZonePurgeDelegateTests` must go **red** on
      `aSharedZonePurgeNotifiesTheDelegateBeforeDeletingLocalRows` (zero notices), while
@@ -1559,7 +1655,7 @@ patch owns which region when a conflict does hit.
 
    A rebase that skips these can silently drop a guard. **Before running any of them, read
    "Guard executability" above** — of the pre-Phase-8 guards only five still revert cleanly
-   (patch 10's is the fifth); patches 8, 11, 12, 16, 17 and 21 are **neutralize-in-place by definition** (above)
+   (patch 10's is the fifth); patches 8, 11, 12, 16, 17, 21 and 22 are **neutralize-in-place by definition** (above)
    and don't rot the same way. The byte-identity check described there is the check that actually
    rules out a dropped patch.
 

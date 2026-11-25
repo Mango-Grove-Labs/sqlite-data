@@ -1,5 +1,6 @@
 #if canImport(CloudKit)
   public import CloudKit
+  import ConcurrencyExtras
 
   @available(iOS 15, tvOS 15, macOS 12, watchOS 8, *)
   package protocol CloudContainer<Database>: AnyObject, Equatable, Hashable, Sendable {
@@ -77,14 +78,86 @@
       for share: CKShare,
       shouldFetchRootRecord: Bool = false
     ) async throws -> ShareMetadata {
-      try await withUnsafeThrowingContinuation { continuation in
-        let operation = CKFetchShareMetadataOperation(shareURLs: [share.url].compactMap(\.self))
-        operation.shouldFetchRootRecord = true
-        operation.perShareMetadataResultBlock = { url, result in
-          continuation.resume(with: result.map(ShareMetadata.init(rawValue:)))
+      // MANGO PATCH 22 — see `fetchShareMetadata(shareURL:shouldFetchRootRecord:run:)`.
+      ShareMetadata(
+        rawValue: try await Self.fetchShareMetadata(
+          shareURL: share.url,
+          shouldFetchRootRecord: shouldFetchRootRecord,
+          run: { [self] operation in add(operation) }
+        )
+      )
+    }
+
+    // MANGO PATCH 22 (MonteSprout Phase 120.2, bug bash A-F2) — a share-metadata fetch resumes
+    // exactly once, from the operation's completion block.
+    //
+    // Upstream resumed an unsafe continuation from the per-share block only. An operation-level
+    // failure (network lost, the system cancelling the operation, a whole-request rate limit) is
+    // reported through the completion block, which upstream never set — so the continuation stayed
+    // suspended forever, and with it `cacheShare`, `handleFetchedRecordZoneChanges` and the
+    // engine's serial event delivery: that database stopped syncing until relaunch. A share with no
+    // URL built an empty operation whose per-share block could never run at all.
+    //
+    // Now: no URL throws `ShareMetadataFetchError.missingURL` before anything runs; the per-share
+    // block only records its result; the completion block resumes once (its own error, else the
+    // recorded result, else `.noResult`); a checked continuation; task cancellation cancels the
+    // operation (CloudKit then completes it with `.operationCancelled`), and a fetch cancelled before
+    // the hand-over never runs it; CloudKit's own timeouts
+    // bound it (request 30 s, resource 60 s); `shouldFetchRootRecord` is honoured (upstream forced
+    // `true`). `run` is the seam a test drives the operation's blocks through by hand, and the URL is
+    // a parameter because a test cannot make a `CKShare` that has one.
+    package static func fetchShareMetadata(
+      shareURL: URL?,
+      shouldFetchRootRecord: Bool,
+      run: (CKFetchShareMetadataOperation) -> Void
+    ) async throws -> CKShare.Metadata {
+      guard let url = shareURL
+      else { throw ShareMetadataFetchError.missingURL }
+      let operation = CKFetchShareMetadataOperation(shareURLs: [url])
+      operation.shouldFetchRootRecord = shouldFetchRootRecord
+      let configuration = CKOperation.Configuration()
+      configuration.timeoutIntervalForRequest = ShareMetadataFetchError.requestTimeout
+      configuration.timeoutIntervalForResource = ShareMetadataFetchError.resourceTimeout
+      operation.configuration = configuration
+      let perShareResult = LockIsolated<Result<CKShare.Metadata, any Error>?>(nil)
+      let cancellable = UncheckedSendable(operation)
+      return try await withTaskCancellationHandler {
+        try await withCheckedThrowingContinuation { continuation in
+          // Cancelled before it was handed over: never run it, so nothing else can resume.
+          guard !operation.isCancelled
+          else {
+            continuation.resume(throwing: CancellationError())
+            return
+          }
+          operation.perShareMetadataResultBlock = { _, result in
+            perShareResult.setValue(result)
+          }
+          operation.fetchShareMetadataResultBlock = { result in
+            switch result {
+            case .failure(let error):
+              continuation.resume(throwing: error)
+            case .success:
+              continuation.resume(
+                with: perShareResult.value ?? .failure(ShareMetadataFetchError.noResult)
+              )
+            }
+          }
+          run(operation)
         }
-        add(operation)
+      } onCancel: {
+        cancellable.value.cancel()
       }
     }
+  }
+
+  /// MANGO PATCH 22 — the live share-metadata fetch's own failures.
+  package enum ShareMetadataFetchError: Error, Equatable {
+    /// The share has no URL (it was never saved), so there is nothing to fetch. Not parked.
+    case missingURL
+    /// The operation completed successfully without reporting the share.
+    case noResult
+
+    package static let requestTimeout: TimeInterval = 30
+    package static let resourceTimeout: TimeInterval = 60
   }
 #endif
